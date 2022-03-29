@@ -911,6 +911,15 @@ static void *check_bytes8(const u8 *start, u8 value, unsigned int bytes)
 	return NULL;
 }
 
+#ifndef __HAVE_ARCH_BCMP
+#undef bcmp
+int bcmp(const void *cs, const void *ct, size_t count)
+{
+       return memcmp(cs, ct, count);
+}
+EXPORT_SYMBOL(bcmp);
+#endif
+
 /**
  * memchr_inv - Find an unmatching character in an area of memory.
  * @start: The memory area
