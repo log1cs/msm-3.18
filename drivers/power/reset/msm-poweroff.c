@@ -1,4 +1,5 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* 2015-08-17: File changed by Sony Corporation */
+/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,7 +37,9 @@
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
 #define EMERGENCY_DLOAD_MAGIC3    0x77777777
+#ifndef CONFIG_AL0_RAMDUMP
 #define EMMC_DLOAD_TYPE		0x2
+#endif
 
 #define SCM_IO_DISABLE_PMIC_ARBITER	1
 #define SCM_IO_DEASSERT_PS_HOLD		2
@@ -60,16 +63,39 @@ static void scm_disable_sdi(void);
 * There is no API from TZ to re-enable the registers.
 * So the SDI cannot be re-enabled when it already by-passed.
 */
+#ifdef CONFIG_AL0_RAMDUMP
+static int download_mode;
+#else
 static int download_mode = 1;
+#endif
 #else
 static const int download_mode;
 #endif
 
+#ifdef CONFIG_AL0_RAMDUMP
+static int in_panic;
+static int panic_prep_restart(struct notifier_block *this,
+			      unsigned long event, void *ptr)
+{
+	in_panic = 1;
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block panic_blk = {
+	.notifier_call	= panic_prep_restart,
+};
+#endif
+
 #ifdef CONFIG_MSM_DLOAD_MODE
+#ifdef CONFIG_AL0_RAMDUMP
+#define EMMC_DLOAD_TYPE		0x2
+#endif
 #define EDL_MODE_PROP "qcom,msm-imem-emergency_download_mode"
 #define DL_MODE_PROP "qcom,msm-imem-download_mode"
 
+#ifndef CONFIG_AL0_RAMDUMP
 static int in_panic;
+#endif
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
 static void *emergency_dload_mode_addr;
@@ -95,6 +121,7 @@ struct reset_attribute {
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
 
+#ifndef CONFIG_AL0_RAMDUMP
 static int panic_prep_restart(struct notifier_block *this,
 			      unsigned long event, void *ptr)
 {
@@ -105,6 +132,7 @@ static int panic_prep_restart(struct notifier_block *this,
 static struct notifier_block panic_blk = {
 	.notifier_call	= panic_prep_restart,
 };
+#endif
 
 int scm_set_dload_mode(int arg1, int arg2)
 {
@@ -145,11 +173,6 @@ static void set_dload_mode(int on)
 		pr_err("Failed to set secure DLOAD mode: %d\n", ret);
 
 	dload_mode_enabled = on;
-}
-
-static bool get_dload_mode(void)
-{
-	return dload_mode_enabled;
 }
 
 static void enable_emergency_dload_mode(void)
@@ -208,10 +231,19 @@ static void enable_emergency_dload_mode(void)
 	pr_err("dload mode is not enabled on target\n");
 }
 
+#ifdef CONFIG_AL0_RAMDUMP
+#if 0
 static bool get_dload_mode(void)
 {
 	return false;
 }
+#endif
+#else
+static bool get_dload_mode(void)
+{
+	return false;
+}
+#endif
 #endif
 
 static void scm_disable_sdi(void)
@@ -266,8 +298,6 @@ static void halt_spmi_pmic_arbiter(void)
 
 static void msm_restart_prepare(const char *cmd)
 {
-	bool need_warm_reset = false;
-
 #ifdef CONFIG_MSM_DLOAD_MODE
 
 	/* Write download mode flags if we're panic'ing
@@ -279,30 +309,35 @@ static void msm_restart_prepare(const char *cmd)
 			(in_panic || restart_mode == RESTART_DLOAD));
 #endif
 
-	if (qpnp_pon_check_hard_reset_stored()) {
-		/* Set warm reset as true when device is in dload mode */
-		if (get_dload_mode() ||
-			((cmd != NULL && cmd[0] != '\0') &&
-			!strcmp(cmd, "edl")))
-			need_warm_reset = true;
-	} else {
-		need_warm_reset = (get_dload_mode() ||
-				((cmd != NULL && cmd[0] != '\0') &&
-				strcmp(cmd, "userrequested")));
-	}
+	qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 
-	/* Hard reset the PMIC unless memory contents must be maintained. */
-	if (need_warm_reset) {
-		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
-	} else {
-		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
-	}
+	if (in_panic) {
+		u32 prev_reason;
 
-	if (cmd != NULL) {
+		prev_reason = __raw_readl(restart_reason);
+		if (prev_reason != 0xABADF00D)
+#ifdef CONFIG_AL0_RAMDUMP
+			__raw_writel(0xC0DEDEAD, restart_reason);
+#else
+			__raw_writel(0x000052DC, restart_reason);
+#endif
+	} else if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_BOOTLOADER);
 			__raw_writel(0x77665500, restart_reason);
+#ifdef CONFIG_AL0_RAMDUMP
+		} else if (!strncmp(cmd, "systemdump_success", 18)) {
+			__raw_writel(0x000052D1, restart_reason);
+		} else if (!strncmp(cmd, "systemdump_err", 14)) {
+			__raw_writel(0x000052DE, restart_reason);
+		} else if (!strncmp(cmd, "systemdump_decryptextsd", 23)) {
+			__raw_writel(0x000052D2, restart_reason);
+		} else if (!strncmp(cmd, "systemdump_decryptfail", 22)) {
+			__raw_writel(0x000052D3, restart_reason);
+		} else if (!strncmp(cmd, "systemdump_nospace", 18)) {
+			__raw_writel(0x000052D5, restart_reason);
+#endif
 		} else if (!strncmp(cmd, "recovery", 8)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RECOVERY);
@@ -335,6 +370,12 @@ static void msm_restart_prepare(const char *cmd)
 		} else {
 			__raw_writel(0x77665501, restart_reason);
 		}
+	} else {
+#ifdef CONFIG_AL0_RAMDUMP
+		__raw_writel(0x00005201, restart_reason);
+#else
+		__raw_writel(0x776655AA, restart_reason);
+#endif
 	}
 
 	flush_cache_all();
@@ -496,11 +537,16 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret = 0;
 
+#ifdef CONFIG_AL0_RAMDUMP
+	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
+#endif
 #ifdef CONFIG_MSM_DLOAD_MODE
 	if (scm_is_call_available(SCM_SVC_BOOT, SCM_DLOAD_CMD) > 0)
 		scm_dload_supported = true;
 
+#ifndef CONFIG_AL0_RAMDUMP
 	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
+#endif
 	np = of_find_compatible_node(NULL, NULL, DL_MODE_PROP);
 	if (!np) {
 		pr_err("unable to find DT imem DLOAD mode node\n");
@@ -572,6 +618,10 @@ skip_sysfs_create:
 
 	pm_power_off = do_msm_poweroff;
 	arm_pm_restart = do_msm_restart;
+#ifdef CONFIG_AL0_RAMDUMP
+	pr_notice("Updating default restart reason\n");
+	__raw_writel(0x000052D4, restart_reason);
+#endif
 
 	if (scm_is_call_available(SCM_SVC_PWR, SCM_IO_DISABLE_PMIC_ARBITER) > 0)
 		scm_pmic_arbiter_disable_supported = true;
