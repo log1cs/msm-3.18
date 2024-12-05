@@ -1,4 +1,3 @@
-/* 2017-03-07: File changed by Sony Corporation */
 /* Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify

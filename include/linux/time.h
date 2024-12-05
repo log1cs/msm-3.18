@@ -1,4 +1,3 @@
-/* 2017-05-08: File changed by Sony Corporation */
 #ifndef _LINUX_TIME_H
 #define _LINUX_TIME_H
 
@@ -6,7 +5,6 @@
 # include <linux/seqlock.h>
 # include <linux/math64.h>
 # include <linux/time64.h>
-#include <linux/version.h>
 
 extern struct timezone sys_tz;
 
@@ -140,21 +138,9 @@ extern int do_getitimer(int which, struct itimerval *value);
 extern unsigned int alarm_setitimer(unsigned int seconds);
 
 extern long do_utimes(int dfd, const char __user *filename, struct timespec *times, int flags);
-#ifdef CONFIG_RAMDUMP_TAGS
-int timekeeping_ramdump_setup(void);
-#endif
 
 struct tms;
 extern void do_sys_times(struct tms *);
-
-/* The ID of snsc_raw_clock (POSIX non-compliant) */
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,39)
-#define CLOCK_SNSC_RAW_CLOCK		9
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
-#define CLOCK_SNSC_RAW_CLOCK		15
-#else
-#error "CLOCK_SNSC_RAW_CLOCK will conflict with CLOCK_BOOTTIME_ALARM"
-#endif
 
 /*
  * Similar to the struct tm in userspace <time.h>, but it needs to be here so

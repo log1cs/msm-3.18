@@ -1,4 +1,3 @@
-/* 2017-06-21: File changed by Sony Corporation */
 /*
  *  gendisk handling
  */
@@ -637,9 +636,6 @@ void del_gendisk(struct gendisk *disk)
 {
 	struct disk_part_iter piter;
 	struct hd_struct *part;
-#ifdef CONFIG_SNSC_FS_FLUSH_HARDWARE_CACHE
-	struct block_device *bdev;
-#endif
 
 	disk_del_events(disk);
 
@@ -647,32 +643,12 @@ void del_gendisk(struct gendisk *disk)
 	disk_part_iter_init(&piter, disk,
 			     DISK_PITER_INCL_EMPTY | DISK_PITER_REVERSE);
 	while ((part = disk_part_iter_next(&piter))) {
-#ifdef CONFIG_SNSC_FS_FLUSH_HARDWARE_CACHE
-		bdev = bdget_disk(disk, part->partno);
-		if (bdev) {
-			mutex_lock(&bdev->bd_mutex);
-			invalidate_partition(disk, part->partno);
-			mutex_unlock(&bdev->bd_mutex);
-			bdput(bdev);
-		}
-#else
 		invalidate_partition(disk, part->partno);
-#endif
 		delete_partition(disk, part->partno);
 	}
 	disk_part_iter_exit(&piter);
 
-#ifdef CONFIG_SNSC_FS_FLUSH_HARDWARE_CACHE
-	bdev = bdget_disk(disk, 0);
-	if (bdev) {
-		mutex_lock(&bdev->bd_mutex);
-		invalidate_partition(disk, 0);
-		mutex_unlock(&bdev->bd_mutex);
-		bdput(bdev);
-	}
-#else
 	invalidate_partition(disk, 0);
-#endif
 	set_capacity(disk, 0);
 	disk->flags &= ~GENHD_FL_UP;
 

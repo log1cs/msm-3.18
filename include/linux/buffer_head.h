@@ -1,4 +1,3 @@
-/* 2017-06-21: File changed by Sony Corporation */
 /*
  * include/linux/buffer_head.h
  *
@@ -190,9 +189,6 @@ void unlock_buffer(struct buffer_head *bh);
 void __lock_buffer(struct buffer_head *bh);
 void ll_rw_block(int, int, struct buffer_head * bh[]);
 int sync_dirty_buffer(struct buffer_head *bh);
-#ifdef CONFIG_SNSC_FS_FAT_RELAX_SYNC
-int flush_dirty_buffer(struct buffer_head *bh);
-#endif
 int __sync_dirty_buffer(struct buffer_head *bh, int rw);
 void write_dirty_buffer(struct buffer_head *bh, int rw);
 int _submit_bh(int rw, struct buffer_head *bh, unsigned long bio_flags);

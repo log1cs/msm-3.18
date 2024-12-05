@@ -1,4 +1,3 @@
-/* 2017-03-23: File changed by Sony Corporation */
 /*
  * RTC subsystem, initialize system time on startup
  *
@@ -11,11 +10,6 @@
 */
 
 #include <linux/rtc.h>
-
-#ifdef CONFIG_SNSC_BUILTIN_TIMESTAMP
-#include <generated/compile.h>
-#include <linux/kernel.h>
-#endif
 
 /* IMPORTANT: the RTC only stores whole seconds. It is arbitrary
  * whether it stores the most close value or the value with partial
@@ -33,13 +27,8 @@ static int __init rtc_hctosys(void)
 	int err = -ENODEV;
 	struct rtc_time tm;
 	struct timespec tv = {
-		.tv_sec	 = 0,
 		.tv_nsec = NSEC_PER_SEC >> 1,
 	};
-
-#ifdef CONFIG_SNSC_BUILTIN_TIMESTAMP
-	unsigned long builtin_time_sec;
-#endif
 	struct rtc_device *rtc = rtc_class_open(CONFIG_RTC_HCTOSYS_DEVICE);
 
 	if (rtc == NULL) {
@@ -79,25 +68,6 @@ err_read:
 	rtc_class_close(rtc);
 
 err_open:
-
-#ifdef CONFIG_SNSC_BUILTIN_TIMESTAMP
-	err = kstrtol(SNSC_UTS_BUILTIN_TIME, 0, &builtin_time_sec);
-	if (!err) {
-		if (tv.tv_sec < builtin_time_sec) {
-			tv.tv_sec = builtin_time_sec;
-			rtc_time_to_tm(tv.tv_sec, &tm);
-			err = do_settimeofday(&tv);
-			pr_info("use built-in time and setting system clock to %d-%02d-%02d %02d:%02d:%02d UTC (%u)\n",
-				tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-				tm.tm_hour, tm.tm_min, tm.tm_sec,
-				(unsigned int) tv.tv_sec);
-#ifdef CONFIG_AL0_RTC_SYSTOHC
-			/* Set the builtin_time_sec to HW clock */
-			rtc_set_ntp_time(tv);
-#endif
-		}
-	}
-#endif
 	rtc_hctosys_ret = err;
 
 	return err;

@@ -1,5 +1,4 @@
-/* 2017-11-30: File changed by Sony Corporation */
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,11 +23,10 @@
 #include <sound/q6afe-v2.h>
 #include <sound/audio_cal_utils.h>
 #include <sound/asound.h>
-#include <sound/msm-dts-eagle.h>
 #include "msm-dts-srs-tm-config.h"
 #include <sound/adsp_err.h>
 
-#define TIMEOUT_MS 5000
+#define TIMEOUT_MS 1000
 
 #define RESET_COPP_ID 99
 #define INVALID_COPP_ID 0xFF
@@ -57,6 +55,7 @@ struct adm_copp {
 	atomic_t channels[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
 	atomic_t app_type[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
 	atomic_t acdb_id[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
+	atomic_t session_type[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
 	wait_queue_head_t wait[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
 	wait_queue_head_t adm_delay_wait[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
 	atomic_t adm_delay_stat[AFE_MAX_PORTS][MAX_COPPS_PER_PORT];
@@ -216,7 +215,8 @@ static int adm_get_copp_id(int port_idx, int copp_idx)
 }
 
 static int adm_get_idx_if_copp_exists(int port_idx, int topology, int mode,
-				 int rate, int bit_width, int app_type)
+				      int rate, int bit_width, int app_type,
+				      int session_type)
 {
 	int idx;
 
@@ -230,6 +230,9 @@ static int adm_get_idx_if_copp_exists(int port_idx, int topology, int mode,
 		    (rate == atomic_read(&this_adm.copp.rate[port_idx][idx])) &&
 		    (bit_width ==
 			atomic_read(&this_adm.copp.bit_width[port_idx][idx])) &&
+		    (session_type ==
+			atomic_read(
+				&this_adm.copp.session_type[port_idx][idx])) &&
 		    (app_type ==
 			atomic_read(&this_adm.copp.app_type[port_idx][idx])))
 			return idx;
@@ -250,222 +253,6 @@ static int adm_get_next_available_copp(int port_idx)
 			break;
 	}
 	return idx;
-}
-
-int adm_dts_eagle_set(int port_id, int copp_idx, int param_id,
-		      void *data, uint32_t size)
-{
-	struct adm_cmd_set_pp_params_v5	admp;
-	int p_idx, ret = 0, *ob_params;
-
-	pr_debug("DTS_EAGLE_ADM: %s - port id %i, copp idx %i, param id 0x%X size %u\n",
-		__func__, port_id, copp_idx, param_id, size);
-
-	port_id = afe_convert_virtual_to_portid(port_id);
-	p_idx = adm_validate_and_get_port_index(port_id);
-	pr_debug("DTS_EAGLE_ADM: %s - after lookup, port id %i, port idx %i\n",
-		__func__, port_id, p_idx);
-
-	if (p_idx < 0) {
-		pr_err("DTS_EAGLE_ADM: %s: invalid port index 0x%x, port id 0x%x\n",
-			__func__, p_idx, port_id);
-		return -EINVAL;
-	}
-
-	if (copp_idx < 0 || copp_idx >= MAX_COPPS_PER_PORT) {
-		pr_err("DTS_EAGLE_ADM: %s: Invalid copp_idx: %d\n", __func__,
-			copp_idx);
-		return -EINVAL;
-	}
-
-	ob_params = (int *)this_adm.outband_memmap.kvaddr;
-	if (ob_params == NULL) {
-		pr_err("DTS_EAGLE_ADM: %s - NULL memmap. Non Eagle topology selected?\n",
-			__func__);
-		ret = -EINVAL;
-		goto fail_cmd;
-	}
-	/* check for integer overflow */
-	if (size > (UINT_MAX - APR_CMD_OB_HDR_SZ))
-		ret = -EINVAL;
-	if ((ret < 0) ||
-	    (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size)) {
-		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %u\n",
-			__func__, this_adm.outband_memmap.size,
-			size + APR_CMD_OB_HDR_SZ);
-		ret = -EINVAL;
-		goto fail_cmd;
-	}
-	*ob_params++ = AUDPROC_MODULE_ID_DTS_HPX_POSTMIX;
-	*ob_params++ = param_id;
-	*ob_params++ = size;
-	memcpy(ob_params, data, size);
-
-	admp.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
-		APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
-	admp.hdr.pkt_size = sizeof(admp);
-	admp.hdr.src_svc = APR_SVC_ADM;
-	admp.hdr.src_domain = APR_DOMAIN_APPS;
-	admp.hdr.src_port = port_id;
-	admp.hdr.dest_svc = APR_SVC_ADM;
-	admp.hdr.dest_domain = APR_DOMAIN_ADSP;
-	admp.hdr.dest_port = atomic_read(&this_adm.copp.id[p_idx][copp_idx]);
-	admp.hdr.token = p_idx << 16 | copp_idx;
-	admp.hdr.opcode = ADM_CMD_SET_PP_PARAMS_V5;
-	admp.payload_addr_lsw = lower_32_bits(this_adm.outband_memmap.paddr);
-	admp.payload_addr_msw = msm_audio_populate_upper_32_bits(
-						this_adm.outband_memmap.paddr);
-	admp.mem_map_handle = atomic_read(&this_adm.mem_map_handles[
-					  ADM_DTS_EAGLE]);
-	admp.payload_size = size + sizeof(struct adm_param_data_v5);
-
-	pr_debug("DTS_EAGLE_ADM: %s - Command was sent now check Q6 - port id = %d, size %d, module id %x, param id %x.\n",
-			__func__, admp.hdr.dest_port,
-			admp.payload_size, AUDPROC_MODULE_ID_DTS_HPX_POSTMIX,
-			param_id);
-	atomic_set(&this_adm.copp.stat[p_idx][copp_idx], -1);
-	ret = apr_send_pkt(this_adm.apr, (uint32_t *)&admp);
-	if (ret < 0) {
-		pr_err("DTS_EAGLE_ADM: %s - ADM enable for port %d failed\n",
-			__func__, port_id);
-		ret = -EINVAL;
-		goto fail_cmd;
-	}
-	ret = wait_event_timeout(this_adm.copp.wait[p_idx][copp_idx],
-			atomic_read(&this_adm.copp.stat
-			[p_idx][copp_idx]) >= 0,
-			msecs_to_jiffies(TIMEOUT_MS));
-	if (!ret) {
-		pr_err("DTS_EAGLE_ADM: %s - set params timed out port = %d\n",
-			__func__, port_id);
-		ret = -EINVAL;
-	} else if (atomic_read(&this_adm.copp.stat
-				[p_idx][copp_idx]) > 0) {
-		pr_err("%s: DSP returned error[%s]\n",
-				__func__, adsp_err_get_err_str(
-				atomic_read(&this_adm.copp.stat
-				[p_idx][copp_idx])));
-		ret = adsp_err_get_lnx_err_code(
-				atomic_read(&this_adm.copp.stat
-				[p_idx][copp_idx]));
-	} else {
-		ret = 0;
-	}
-
-fail_cmd:
-	return ret;
-}
-
-int adm_dts_eagle_get(int port_id, int copp_idx, int param_id,
-		      void *data, uint32_t size)
-{
-	struct adm_cmd_get_pp_params_v5	admp;
-	int p_idx, ret = 0, *ob_params;
-	uint32_t orig_size = size;
-	pr_debug("DTS_EAGLE_ADM: %s - port id %i, copp idx %i, param id 0x%X\n",
-		 __func__, port_id, copp_idx, param_id);
-
-	port_id = afe_convert_virtual_to_portid(port_id);
-	p_idx = adm_validate_and_get_port_index(port_id);
-	if (p_idx < 0) {
-		pr_err("DTS_EAGLE_ADM: %s - invalid port index %i, port id %i, copp idx %i\n",
-				__func__, p_idx, port_id, copp_idx);
-		return -EINVAL;
-	}
-
-	if (copp_idx < 0 || copp_idx >= MAX_COPPS_PER_PORT) {
-		pr_err("DTS_EAGLE_ADM: %s: Invalid copp_idx: %d\n", __func__,
-			copp_idx);
-		return -EINVAL;
-	}
-
-	if ((size == 0) || !data) {
-		pr_err("DTS_EAGLE_ADM: %s - invalid size %u or pointer %pK.\n",
-			__func__, size, data);
-		return -EINVAL;
-	}
-
-	size = (size+3) & 0xFFFFFFFC;
-
-	ob_params = (int *)(this_adm.outband_memmap.kvaddr);
-	if (ob_params == NULL) {
-		pr_err("DTS_EAGLE_ADM: %s - NULL memmap. Non Eagle topology selected?",
-			__func__);
-		ret = -EINVAL;
-		goto fail_cmd;
-	}
-	/* check for integer overflow */
-	if (size > (UINT_MAX - APR_CMD_OB_HDR_SZ))
-		ret = -EINVAL;
-	if ((ret < 0) ||
-	    (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size)) {
-		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %u\n",
-			__func__, this_adm.outband_memmap.size,
-			size + APR_CMD_OB_HDR_SZ);
-		ret = -EINVAL;
-		goto fail_cmd;
-	}
-	*ob_params++ = AUDPROC_MODULE_ID_DTS_HPX_POSTMIX;
-	*ob_params++ = param_id;
-	*ob_params++ = size;
-
-	admp.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
-			     APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
-	admp.hdr.pkt_size = sizeof(admp);
-	admp.hdr.src_svc = APR_SVC_ADM;
-	admp.hdr.src_domain = APR_DOMAIN_APPS;
-	admp.hdr.src_port = port_id;
-	admp.hdr.dest_svc = APR_SVC_ADM;
-	admp.hdr.dest_domain = APR_DOMAIN_ADSP;
-	admp.hdr.dest_port = atomic_read(&this_adm.copp.id[p_idx][copp_idx]);
-	admp.hdr.token = p_idx << 16 | copp_idx;
-	admp.hdr.opcode = ADM_CMD_GET_PP_PARAMS_V5;
-	admp.data_payload_addr_lsw =
-				lower_32_bits(this_adm.outband_memmap.paddr);
-	admp.data_payload_addr_msw =
-				msm_audio_populate_upper_32_bits(
-						this_adm.outband_memmap.paddr);
-	admp.mem_map_handle = atomic_read(&this_adm.mem_map_handles[
-					  ADM_DTS_EAGLE]);
-	admp.module_id = AUDPROC_MODULE_ID_DTS_HPX_POSTMIX;
-	admp.param_id = param_id;
-	admp.param_max_size = size + sizeof(struct adm_param_data_v5);
-	admp.reserved = 0;
-
-	atomic_set(&this_adm.copp.stat[p_idx][copp_idx], -1);
-
-	ret = apr_send_pkt(this_adm.apr, (uint32_t *)&admp);
-	if (ret < 0) {
-		pr_err("DTS_EAGLE_ADM: %s - Failed to get EAGLE Params on port %d\n",
-			__func__, port_id);
-		ret = -EINVAL;
-		goto fail_cmd;
-	}
-	ret = wait_event_timeout(this_adm.copp.wait[p_idx][copp_idx],
-			atomic_read(&this_adm.copp.stat
-			[p_idx][copp_idx]) >= 0,
-			msecs_to_jiffies(TIMEOUT_MS));
-	if (!ret) {
-		pr_err("DTS_EAGLE_ADM: %s - EAGLE get params timed out port = %d\n",
-			__func__, port_id);
-		ret = -EINVAL;
-		goto fail_cmd;
-	} else if (atomic_read(&this_adm.copp.stat
-				[p_idx][copp_idx]) > 0) {
-		pr_err("%s: DSP returned error[%s]\n",
-				__func__, adsp_err_get_err_str(
-				atomic_read(&this_adm.copp.stat
-				[p_idx][copp_idx])));
-		ret = adsp_err_get_lnx_err_code(
-				atomic_read(&this_adm.copp.stat
-					[p_idx][copp_idx]));
-		goto fail_cmd;
-	}
-
-	memcpy(data, ob_params, orig_size);
-	ret = 0;
-fail_cmd:
-	return ret;
 }
 
 int srs_trumedia_open(int port_id, int copp_idx, __s32 srs_tech_id,
@@ -724,6 +511,280 @@ int srs_trumedia_open(int port_id, int copp_idx, __s32 srs_tech_id,
 
 fail_cmd:
 	kfree(adm_params);
+	return ret;
+}
+
+static int adm_populate_channel_weight(u16 *ptr,
+					struct msm_pcm_channel_mixer *ch_mixer,
+					int channel_index)
+{
+	u16 i, j, start_index = 0;
+
+	if (channel_index > ch_mixer->output_channel) {
+		pr_err("%s: channel index %d is larger than output_channel %d\n",
+			 __func__, channel_index, ch_mixer->output_channel);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < ch_mixer->output_channel; i++) {
+		pr_debug("%s: weight for output %d:", __func__, i);
+		for (j = 0; j < ADM_MAX_CHANNELS; j++)
+			pr_debug(" %d",
+				ch_mixer->channel_weight[i][j]);
+		pr_debug("\n");
+	}
+
+	for (i = 0; i < channel_index; ++i)
+		start_index += ch_mixer->input_channels[i];
+
+	for (i = 0; i < ch_mixer->output_channel; ++i) {
+		for (j = start_index;
+			j < start_index +
+			ch_mixer->input_channels[channel_index]; j++) {
+			*ptr = ch_mixer->channel_weight[i][j];
+			 pr_debug("%s: ptr[%d][%d] = %d\n",
+				__func__, i, j, *ptr);
+			 ptr++;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * adm_programable_channel_mixer
+ *
+ * Receives port_id, copp_idx, session_id, session_type, ch_mixer
+ * and channel_index to send ADM command to mix COPP data.
+ *
+ * port_id - Passed value, port_id for which backend is wanted
+ * copp_idx - Passed value, copp_idx for which COPP is wanted
+ * session_id - Passed value, session_id for which session is needed
+ * session_type - Passed value, session_type for RX or TX
+ * ch_mixer - Passed value, ch_mixer for which channel mixer config is needed
+ * channel_index - Passed value, channel_index for which channel is needed
+ * use_default_chmap - true if default channel map  to be used
+ * ch_map - input/output channel map for playback/capture session respectively
+ */
+int adm_programable_channel_mixer(int port_id, int copp_idx, int session_id,
+				  int session_type,
+				  struct msm_pcm_channel_mixer *ch_mixer,
+				  int channel_index, bool use_default_chmap,
+				  char *ch_map)
+{
+	struct adm_cmd_set_pspd_mtmx_strtr_params_v5 *adm_params = NULL;
+	struct adm_param_data_v5 data_v5;
+	int ret = 0, port_idx, sz = 0, param_size = 0;
+	u16 *adm_pspd_params;
+	u16 *ptr;
+	int index = 0, i;
+
+	pr_debug("%s: port_id = %d\n", __func__, port_id);
+	port_id = afe_convert_virtual_to_portid(port_id);
+	port_idx = adm_validate_and_get_port_index(port_id);
+	if (port_idx < 0) {
+		pr_err("%s: Invalid port_id %#x\n", __func__, port_id);
+		return -EINVAL;
+	}
+	/*
+	 * First 8 bytes are 4 bytes as rule number, 2 bytes as output
+	 * channel and 2 bytes as input channel.
+	 * 2 * ch_mixer->output_channel means output channel mapping.
+	 * 2 * ch_mixer->input_channels[channel_index]) means input
+	 * channel mapping.
+	 * 2 * ch_mixer->input_channels[channel_index] *
+	 * ch_mixer->output_channel) means the channel mixer weighting
+	 * coefficients.
+	 * param_size needs to be a multiple of 4 bytes.
+	 */
+
+	param_size = 2 * (4 + ch_mixer->output_channel +
+			ch_mixer->input_channels[channel_index] +
+			ch_mixer->input_channels[channel_index] *
+			ch_mixer->output_channel);
+	/* Params size should be multiple of 4 bytes i.e 32bit aligned*/
+	param_size = roundup(param_size, 4);
+
+	sz = sizeof(struct adm_cmd_set_pspd_mtmx_strtr_params_v5) +
+			sizeof(struct default_chmixer_param_id_coeff) +
+			sizeof(struct adm_param_data_v5) + param_size;
+	pr_debug("%s: sz = %d\n", __func__, sz);
+	adm_params = kzalloc(sz, GFP_KERNEL);
+	if (!adm_params)
+		return -ENOMEM;
+
+	adm_params->payload_addr_lsw = 0;
+	adm_params->payload_addr_msw = 0;
+	adm_params->mem_map_handle = 0;
+	adm_params->direction = session_type;
+	adm_params->sessionid = session_id;
+	pr_debug("%s: copp_id = %d, session id  %d\n", __func__,
+		atomic_read(&this_adm.copp.id[port_idx][copp_idx]),
+			session_id);
+	adm_params->deviceid = atomic_read(
+				&this_adm.copp.id[port_idx][copp_idx]);
+	adm_params->reserved = 0;
+
+	data_v5.module_id = MTMX_MODULE_ID_DEFAULT_CHMIXER;
+	data_v5.param_id =  DEFAULT_CHMIXER_PARAM_ID_COEFF;
+	data_v5.reserved = 0;
+	data_v5.param_size = param_size;
+	adm_params->payload_size =
+			sizeof(struct default_chmixer_param_id_coeff) +
+			sizeof(struct adm_param_data_v5) + data_v5.param_size;
+	adm_pspd_params = (u16 *)((u8 *)adm_params +
+			sizeof(struct adm_cmd_set_pspd_mtmx_strtr_params_v5));
+	memcpy(adm_pspd_params, &data_v5, sizeof(data_v5));
+
+	adm_pspd_params = (u16 *)((u8 *)adm_params +
+			sizeof(struct adm_cmd_set_pspd_mtmx_strtr_params_v5)
+			+ sizeof(data_v5));
+
+	adm_pspd_params[0] = ch_mixer->rule;
+	adm_pspd_params[2] = ch_mixer->output_channel;
+	adm_pspd_params[3] = ch_mixer->input_channels[channel_index];
+	index = 4;
+
+	if ((session_type == SESSION_TYPE_TX) && !use_default_chmap && ch_map) {
+		for (i = 0; i < ch_mixer->output_channel; i++)
+			adm_pspd_params[index++] = ch_map[i];
+	} else {
+		if (ch_mixer->output_channel == 1) {
+			adm_pspd_params[index] = PCM_CHANNEL_FC;
+		} else if (ch_mixer->output_channel == 2) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+		} else if (ch_mixer->output_channel == 3) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_FC;
+		} else if (ch_mixer->output_channel == 4) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_RS;
+		} else if (ch_mixer->output_channel == 5) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_FC;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 4] = PCM_CHANNEL_RS;
+		} else if (ch_mixer->output_channel == 6) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_LFE;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_FC;
+			adm_pspd_params[index + 4] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 5] = PCM_CHANNEL_RS;
+		} else if (ch_mixer->output_channel == 8) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_LFE;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_FC;
+			adm_pspd_params[index + 4] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 5] = PCM_CHANNEL_RS;
+			adm_pspd_params[index + 6] = PCM_CHANNEL_LB;
+			adm_pspd_params[index + 7] = PCM_CHANNEL_RB;
+		}
+		index = index + ch_mixer->output_channel;
+	}
+
+	if ((session_type == SESSION_TYPE_RX) && !use_default_chmap && ch_map) {
+		for (i = 0; i < ch_mixer->input_channels[channel_index]; i++)
+			adm_pspd_params[index++] = ch_map[i];
+	} else {
+		if (ch_mixer->input_channels[channel_index] == 1) {
+			adm_pspd_params[index] = PCM_CHANNEL_FC;
+		} else if (ch_mixer->input_channels[channel_index] == 2) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+		} else if (ch_mixer->input_channels[channel_index] == 3) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_FC;
+		} else if (ch_mixer->input_channels[channel_index] == 4) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_RS;
+		} else if (ch_mixer->input_channels[channel_index] == 5) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_FC;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 4] = PCM_CHANNEL_RS;
+		} else if (ch_mixer->input_channels[channel_index] == 6) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_LFE;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_FC;
+			adm_pspd_params[index + 4] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 5] = PCM_CHANNEL_RS;
+		} else if (ch_mixer->input_channels[channel_index] == 8) {
+			adm_pspd_params[index] = PCM_CHANNEL_FL;
+			adm_pspd_params[index + 1] = PCM_CHANNEL_FR;
+			adm_pspd_params[index + 2] = PCM_CHANNEL_LFE;
+			adm_pspd_params[index + 3] = PCM_CHANNEL_FC;
+			adm_pspd_params[index + 4] = PCM_CHANNEL_LS;
+			adm_pspd_params[index + 5] = PCM_CHANNEL_RS;
+			adm_pspd_params[index + 6] = PCM_CHANNEL_LB;
+			adm_pspd_params[index + 7] = PCM_CHANNEL_RB;
+		}
+		index = index + ch_mixer->input_channels[channel_index];
+	}
+	ret = adm_populate_channel_weight(&adm_pspd_params[index],
+					ch_mixer, channel_index);
+	if (ret) {
+		pr_err("%s: fail to get channel weight with error %d\n",
+			__func__, ret);
+		goto fail_cmd;
+	}
+
+	adm_params->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+				APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	adm_params->hdr.src_svc = APR_SVC_ADM;
+	adm_params->hdr.src_domain = APR_DOMAIN_APPS;
+	adm_params->hdr.src_port = port_id;
+	adm_params->hdr.dest_svc = APR_SVC_ADM;
+	adm_params->hdr.dest_domain = APR_DOMAIN_ADSP;
+	adm_params->hdr.dest_port =
+			atomic_read(&this_adm.copp.id[port_idx][copp_idx]);
+	adm_params->hdr.token = port_idx << 16 | copp_idx;
+	adm_params->hdr.opcode = ADM_CMD_SET_PSPD_MTMX_STRTR_PARAMS_V5;
+	adm_params->hdr.pkt_size = sz;
+	adm_params->payload_addr_lsw = 0;
+	adm_params->payload_addr_msw = 0;
+	adm_params->mem_map_handle = 0;
+	adm_params->reserved = 0;
+
+	ptr = (u16 *)adm_params;
+	for (index = 0; index < (sz / 2); index++)
+		pr_debug("%s: adm_params[%d] = 0x%x\n",
+			__func__, index, (unsigned int)ptr[index]);
+
+	atomic_set(&this_adm.copp.stat[port_idx][copp_idx], 0);
+	ret = apr_send_pkt(this_adm.apr, (uint32_t *)adm_params);
+	if (ret < 0) {
+		pr_err("%s: Set params failed port %d rc %d\n", __func__,
+			port_id, ret);
+		ret = -EINVAL;
+		goto fail_cmd;
+	}
+
+	ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
+			atomic_read(
+			&this_adm.copp.stat[port_idx][copp_idx]) >= 0,
+			msecs_to_jiffies(TIMEOUT_MS));
+	if (!ret) {
+		pr_err("%s: set params timed out port = %d\n",
+			__func__, port_id);
+		ret = -ETIMEDOUT;
+		goto fail_cmd;
+	}
+	ret = 0;
+fail_cmd:
+	kfree(adm_params);
+
 	return ret;
 }
 
@@ -1280,6 +1341,9 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 					    &this_adm.copp.app_type[i][j], 0);
 					atomic_set(
 					   &this_adm.copp.acdb_id[i][j], 0);
+					atomic_set(
+					   &this_adm.copp.session_type[i][j],
+					   0);
 					this_adm.copp.adm_status[i][j] =
 						ADM_STATUS_CALIBRATION_REQUIRED;
 				}
@@ -2324,7 +2388,8 @@ int adm_arrange_mch_ep2_map(struct adm_cmd_device_open_v6 *open_v6,
 }
 
 int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
-	     int perf_mode, uint16_t bit_width, int app_type, int acdb_id)
+	     int perf_mode, uint16_t bit_width, int app_type, int acdb_id,
+	     int session_type)
 {
 	struct adm_cmd_device_open_v5	open;
 	struct adm_cmd_device_open_v6	open_v6;
@@ -2336,13 +2401,6 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		 __func__, port_id, path, rate, channel_mode, perf_mode,
 		 topology);
 
-	/* For DTS EAGLE only, force 24 bit */
-	if ((topology == ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX) &&
-		(perf_mode == LEGACY_PCM_MODE)) {
-		bit_width = 24;
-		pr_debug("%s: Force open adm in 24-bit for DTS HPX topology 0x%x\n",
-			__func__, topology);
-	}
 	port_id = q6audio_convert_virtual_to_portid(port_id);
 	port_idx = adm_validate_and_get_port_index(port_id);
 	if (port_idx < 0) {
@@ -2364,8 +2422,7 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		flags = ADM_ULL_POST_PROCESSING_DEVICE_SESSION;
 		if ((topology == DOLBY_ADM_COPP_TOPOLOGY_ID) ||
 		    (topology == DS2_ADM_COPP_TOPOLOGY_ID) ||
-		    (topology == SRS_TRUMEDIA_TOPOLOGY_ID) ||
-		    (topology == ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX))
+		    (topology == SRS_TRUMEDIA_TOPOLOGY_ID))
 			topology = DEFAULT_COPP_TOPOLOGY;
 	} else if (perf_mode == ULTRA_LOW_LATENCY_PCM_MODE) {
 		flags = ADM_ULTRA_LOW_LATENCY_DEVICE_SESSION;
@@ -2376,8 +2433,7 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		flags = ADM_LOW_LATENCY_DEVICE_SESSION;
 		if ((topology == DOLBY_ADM_COPP_TOPOLOGY_ID) ||
 		    (topology == DS2_ADM_COPP_TOPOLOGY_ID) ||
-		    (topology == SRS_TRUMEDIA_TOPOLOGY_ID) ||
-		    (topology == ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX))
+		    (topology == SRS_TRUMEDIA_TOPOLOGY_ID))
 			topology = DEFAULT_COPP_TOPOLOGY;
 	} else {
 		if (path == ADM_PATH_COMPRESSED_RX)
@@ -2388,15 +2444,12 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 
 	if ((topology == VPM_TX_SM_ECNS_COPP_TOPOLOGY) ||
 	    (topology == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY) ||
-#ifdef CONFIG_AL0_CAPI_V2_LIBMFE
-	    (topology == CAPI_V2_LIBMFEBUNDLE_TX_TOPOLOGY) ||
-#endif
 	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY))
-
 		rate = 16000;
 
 	copp_idx = adm_get_idx_if_copp_exists(port_idx, topology, perf_mode,
-						rate, bit_width, app_type);
+					      rate, bit_width, app_type,
+					      session_type);
 	if (copp_idx < 0) {
 		copp_idx = adm_get_next_available_copp(port_idx);
 		if (copp_idx >= MAX_COPPS_PER_PORT) {
@@ -2419,6 +2472,9 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 				   app_type);
 			atomic_set(&this_adm.copp.acdb_id[port_idx][copp_idx],
 				   acdb_id);
+			atomic_set(
+				&this_adm.copp.session_type[port_idx][copp_idx],
+				   session_type);
 			set_bit(ADM_STATUS_CALIBRATION_REQUIRED,
 			(void *)&this_adm.copp.adm_status[port_idx][copp_idx]);
 			if (path != ADM_PATH_COMPRESSED_RX)
@@ -2451,20 +2507,6 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		(uint32_t)this_adm.outband_memmap.size);
 		}
 	}
-		if ((topology == ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX) &&
-		    (perf_mode == LEGACY_PCM_MODE)) {
-			int res = 0;
-			atomic_set(&this_adm.mem_map_index, ADM_DTS_EAGLE);
-			msm_dts_ion_memmap(&this_adm.outband_memmap);
-			res = adm_memory_map_regions(
-				      &this_adm.outband_memmap.paddr,
-				      0,
-				      (uint32_t *)&this_adm.outband_memmap.size,
-				      1);
-			if (res < 0)
-				pr_err("%s: DTS_EAGLE mmap did not work!",
-					__func__);
-		}
 		open.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 						   APR_HDR_LEN(APR_HDR_SIZE),
 						   APR_PKT_VER);
@@ -2482,7 +2524,8 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		open.endpoint_id_1 = tmp_port;
 		open.endpoint_id_2 = 0xFFFF;
 
-		if (this_adm.ec_ref_rx && (path != 1)) {
+		if (this_adm.ec_ref_rx && (path != 1) &&
+		    (afe_get_port_type(tmp_port) == MSM_AFE_PORT_TYPE_TX)) {
 			open.endpoint_id_2 = this_adm.ec_ref_rx;
 			this_adm.ec_ref_rx = -1;
 		}
@@ -2508,6 +2551,8 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 
 		if ((this_adm.num_ec_ref_rx_chans != 0) && (path != 1) &&
 			(open.endpoint_id_2 != 0xFFFF)) {
+			memset(&open_v6, 0,
+				sizeof(struct adm_cmd_device_open_v6));
 			memcpy(&open_v6, &open,
 				sizeof(struct adm_cmd_device_open_v5));
 			open_v6.hdr.opcode = ADM_CMD_DEVICE_OPEN_V6;
@@ -2803,10 +2848,6 @@ int adm_matrix_map(int path, struct route_payload payload_map, int perf_mode,
 		for (i = 0; i < payload_map.num_copps; i++) {
 			port_idx = afe_get_port_index(payload_map.port_id[i]);
 			copp_idx = payload_map.copp_idx[i];
-			if (atomic_read(
-				&this_adm.copp.topology[port_idx][copp_idx]) ==
-				ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX)
-				continue;
 			rtac_add_adm_device(payload_map.port_id[i],
 					    atomic_read(&this_adm.copp.id
 							[port_idx][copp_idx]),
@@ -2920,21 +2961,6 @@ int adm_close(int port_id, int perf_mode, int copp_idx)
 			}
 		}
 
-		if ((perf_mode == LEGACY_PCM_MODE) &&
-		    (this_adm.outband_memmap.paddr != 0) &&
-		    (atomic_read(
-			&this_adm.copp.topology[port_idx][copp_idx]) ==
-			ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX)) {
-			atomic_set(&this_adm.mem_map_index, ADM_DTS_EAGLE);
-			ret = adm_memory_unmap_regions();
-			if (ret < 0) {
-				pr_err("%s: adm mem unmmap err %d",
-					__func__, ret);
-			} else {
-				atomic_set(&this_adm.mem_map_handles
-					   [ADM_DTS_EAGLE], 0);
-			}
-		}
 
 		if ((afe_get_port_type(port_id) == MSM_AFE_PORT_TYPE_TX) &&
 		    this_adm.sourceTrackingData.memmap.paddr) {
@@ -2981,6 +3007,7 @@ int adm_close(int port_id, int perf_mode, int copp_idx)
 		atomic_set(&this_adm.copp.channels[port_idx][copp_idx], 0);
 		atomic_set(&this_adm.copp.bit_width[port_idx][copp_idx], 0);
 		atomic_set(&this_adm.copp.app_type[port_idx][copp_idx], 0);
+		atomic_set(&this_adm.copp.session_type[port_idx][copp_idx], 0);
 
 		clear_bit(ADM_STATUS_CALIBRATION_REQUIRED,
 			(void *)&this_adm.copp.adm_status[port_idx][copp_idx]);
@@ -3403,10 +3430,6 @@ static int adm_init_cal_data(void)
 		{NULL, NULL, cal_utils_match_buf_num} },
 
 		{{ADM_RTAC_APR_CAL_TYPE,
-		{NULL, NULL, NULL, NULL, NULL, NULL} },
-		{NULL, NULL, cal_utils_match_buf_num} },
-
-		{{DTS_EAGLE_CAL_TYPE,
 		{NULL, NULL, NULL, NULL, NULL, NULL} },
 		{NULL, NULL, cal_utils_match_buf_num} },
 
@@ -4458,196 +4481,6 @@ done:
 	return ret;
 }
 
-#ifdef CONFIG_AL0_CAPI_V2_LIBMFE
-int adm_get_libmfe_sound_direction(int port_id, int copp_idx,
-	struct libmfe_sound_direction_param *soundDirectionData)
-{
-	int ret = 0;
-	char *params_value;
-	uint32_t param_payload_len = sizeof(struct adm_param_data_v5) +
-				sizeof(struct libmfe_sound_direction_param);
-	struct libmfe_sound_direction_param *sounddirection_params;
-
-	pr_debug("%s: Enter, port_id %d, copp_idx %d\n", __func__, port_id, copp_idx);
-
-	params_value = kzalloc(param_payload_len, GFP_KERNEL);
-	if (!params_value) {
-		pr_err("%s, params memory alloc failed\n", __func__);
-
-		ret = -ENOMEM;
-		goto done;
-	}
-	ret = adm_get_params_v2(port_id, copp_idx,
-				CAPI_V2_BUNDLE_MODULE_ID,
-				CAPI_V2_LIBMFE_PARAM_ID_SOUND_DIRECT,
-				param_payload_len,
-				params_value,
-				ADM_CLIENT_ID_DEFAULT);
-	if (ret) {
-		pr_err("%s: get parameters failed ret:%d\n", __func__, ret);
-
-		kfree(params_value);
-		ret = -EINVAL;
-		goto done;
-	}
-
-	sounddirection_params = (struct libmfe_sound_direction_param *) params_value;
-
-	*soundDirectionData = *sounddirection_params;
-
-	kfree(params_value);
-
-done:
-	pr_debug("%s: Exit, ret = %d\n", __func__, ret);
-
-	return ret;
-}
-
-int adm_get_libmfe_msg_packet(int port_id, int copp_idx,
-	struct libmfe_msg_packet_param *msgPacketData)
-{
-	int ret = 0;
-	char *params_value;
-	uint32_t param_payload_len = sizeof(struct adm_param_data_v5) +
-				sizeof(struct libmfe_msg_packet_param);
-	struct libmfe_msg_packet_param *msgPacket_params;
-
-	pr_debug("%s: Enter, port_id %d, copp_idx %d\n", __func__, port_id, copp_idx);
-
-	params_value = kzalloc(param_payload_len, GFP_KERNEL);
-	if (!params_value) {
-		pr_err("%s, params memory alloc failed\n", __func__);
-
-		ret = -ENOMEM;
-		goto done;
-	}
-	ret = adm_get_params_v2(port_id, copp_idx,
-				CAPI_V2_BUNDLE_MODULE_ID,
-				CAPI_V2_LIBMFE_PARAM_ID_MSG_PACKET,
-				param_payload_len,
-				params_value,
-				ADM_CLIENT_ID_DEFAULT);
-	if (ret) {
-		pr_err("%s: get parameters failed ret:%d\n", __func__, ret);
-
-		kfree(params_value);
-		ret = -EINVAL;
-		goto done;
-	}
-
-	msgPacket_params = (struct libmfe_msg_packet_param *) params_value;
-
-	*msgPacketData = *msgPacket_params;
-
-	kfree(params_value);
-
-done:
-	pr_debug("%s: Exit, ret = %d\n", __func__, ret);
-
-	return ret;
-}
-
-int adm_set_libmfe_msg_packet(int port_id, int copp_idx,
-	struct libmfe_msg_packet_param msgPacketData)
-{
-	struct adm_set_msg_packet_param msgpacket_params;
-	int sz = 0;
-	int ret  = 0;
-	int port_idx;
-
-	pr_debug("%s: Enter, port_id %d, copp_idx %d\n",
-		  __func__, port_id, copp_idx);
-
-	port_id = afe_convert_virtual_to_portid(port_id);
-	port_idx = adm_validate_and_get_port_index(port_id);
-	if (port_idx < 0) {
-		pr_err("%s: Invalid port_id %#x\n", __func__, port_id);
-
-		ret = -EINVAL;
-		goto done;
-	}
-
-	if (copp_idx < 0 || copp_idx >= MAX_COPPS_PER_PORT) {
-		pr_err("%s: Invalid copp_num: %d\n", __func__, copp_idx);
-
-		ret = -EINVAL;
-		goto done;
-	}
-
-	sz = sizeof(struct adm_set_msg_packet_param);
-	msgpacket_params.params.hdr.hdr_field =
-		APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD, APR_HDR_LEN(APR_HDR_SIZE),
-			      APR_PKT_VER);
-	msgpacket_params.params.hdr.pkt_size = sz;
-	msgpacket_params.params.hdr.src_svc = APR_SVC_ADM;
-	msgpacket_params.params.hdr.src_domain = APR_DOMAIN_APPS;
-	msgpacket_params.params.hdr.src_port = port_id;
-	msgpacket_params.params.hdr.dest_svc = APR_SVC_ADM;
-	msgpacket_params.params.hdr.dest_domain = APR_DOMAIN_ADSP;
-	msgpacket_params.params.hdr.dest_port =
-			atomic_read(&this_adm.copp.id[port_idx][copp_idx]);
-	msgpacket_params.params.hdr.token = port_idx << 16 |
-				ADM_CLIENT_ID_DEFAULT << 8 | copp_idx;
-	msgpacket_params.params.hdr.opcode = ADM_CMD_SET_PP_PARAMS_V5;
-	msgpacket_params.params.payload_addr_lsw = 0;
-	msgpacket_params.params.payload_addr_msw = 0;
-	msgpacket_params.params.mem_map_handle = 0;
-	msgpacket_params.params.payload_size = sizeof(msgpacket_params) -
-				sizeof(msgpacket_params.params);
-	msgpacket_params.data.module_id = CAPI_V2_BUNDLE_MODULE_ID;
-	msgpacket_params.data.param_id = CAPI_V2_LIBMFE_PARAM_ID_MSG_PACKET;
-	msgpacket_params.data.param_size =
-		msgpacket_params.params.payload_size -
-		sizeof(msgpacket_params.data);
-	msgpacket_params.data.reserved = 0;
-
-	memcpy(&(msgpacket_params.msgpacket_data), &(msgPacketData),
-	       sizeof(struct libmfe_msg_packet_param));
-	pr_debug("%s: messageId = %d\n",
-		 __func__, msgpacket_params.msgpacket_data.messageId);
-	pr_debug("%s: errorCode = %d\n",
-		 __func__, msgpacket_params.msgpacket_data.errorCode);
-
-	atomic_set(&this_adm.copp.stat[port_idx][copp_idx], -1);
-	ret = apr_send_pkt(this_adm.apr, (uint32_t *)&msgpacket_params);
-	if (ret < 0) {
-		pr_err("%s: Set params failed port = 0x%x rc %d\n",
-			__func__, port_id, ret);
-
-		ret = -EINVAL;
-		goto done;
-	}
-	/* Wait for the callback */
-	ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
-		atomic_read(&this_adm.copp.stat[port_idx][copp_idx]) >= 0,
-		msecs_to_jiffies(TIMEOUT_MS));
-	if (!ret) {
-		pr_err("%s: Set params timed out port = 0x%x\n",
-			 __func__, port_id);
-
-		ret = -EINVAL;
-		goto done;
-	} else if (atomic_read(&this_adm.copp.stat
-			       [port_idx][copp_idx]) > 0) {
-		pr_err("%s: DSP returned error[%s]\n",
-				__func__, adsp_err_get_err_str(
-				atomic_read(&this_adm.copp.stat
-				[port_idx][copp_idx])));
-		ret = adsp_err_get_lnx_err_code(
-			atomic_read(&this_adm.copp.stat
-				    [port_idx][copp_idx]));
-		goto done;
-	}
-
-	ret = 0;
-
-done:
-	pr_debug("%s: Exit, ret=%d\n", __func__, ret);
-
-	return ret;
-}
-#endif
-
 static int adm_source_tracking_alloc_map_memory(void)
 {
 	int ret;
@@ -4858,6 +4691,7 @@ static int __init adm_init(void)
 			atomic_set(&this_adm.copp.bit_width[i][j], 0);
 			atomic_set(&this_adm.copp.app_type[i][j], 0);
 			atomic_set(&this_adm.copp.acdb_id[i][j], 0);
+			atomic_set(&this_adm.copp.session_type[i][j], 0);
 			init_waitqueue_head(&this_adm.copp.wait[i][j]);
 			atomic_set(&this_adm.copp.adm_delay_stat[i][j], 0);
 			init_waitqueue_head(

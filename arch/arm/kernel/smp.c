@@ -1,4 +1,3 @@
-/* 2017-11-13: File changed by Sony Corporation */
 /*
  *  linux/arch/arm/kernel/smp.c
  *
@@ -50,10 +49,6 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ipi.h>
-
-#ifdef CONFIG_SNSC_LCTRACER
-#include <linux/snsc_lctracer.h>
-#endif
 
 /*
  * as from 2.5, kernels no longer have an init_tasks structure
@@ -643,14 +638,6 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 {
 	unsigned int cpu = smp_processor_id();
 	struct pt_regs *old_regs = set_irq_regs(regs);
-#ifdef CONFIG_SNSC_LCTRACER
-	u64 t1 = 0;
-	u64 t2 = 0;
-	u32 delta = 0;
-
-	if (snsc_lctracer_is_running())
-		t1 = sched_clock();
-#endif
 
 	if ((unsigned)ipinr < NR_IPI) {
 		trace_ipi_entry(ipi_types[ipinr]);
@@ -719,15 +706,6 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 		trace_ipi_exit(ipi_types[ipinr]);
 
 	per_cpu(pending_ipi, cpu) = false;
-#ifdef CONFIG_SNSC_LCTRACER
-	if (snsc_lctracer_is_running()) {
-		t2 = sched_clock();
-		delta = t2 - t1;
-		delta /= 1000;
-		snsc_lctracer_add_trace_entry(current, current,
-				SNSC_LCTRACER_IPI_IRQ | (delta << 16));
-	}
-#endif
 
 	set_irq_regs(old_regs);
 }

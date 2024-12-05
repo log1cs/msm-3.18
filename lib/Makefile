@@ -195,13 +195,6 @@ quiet_cmd_crc32 = GEN     $@
 $(obj)/crc32table.h: $(obj)/gen_crc32table
 	$(call cmd,crc32)
 
-# SNSC lite tracing support
-obj-$(CONFIG_SNSC_LCTRACER) += snsc_lctracer.o
-obj-$(CONFIG_SNSC_LCTRACER_TRIGGER_EM) += snsc_lctracer_em_hook.o
-
-# SNSC profiling support
-obj-$(CONFIG_SNSC_BOOT_TIME) += snsc_boot_time.o
-
 #
 # Build a fast OID lookip registry from include/linux/oid_registry.h
 #

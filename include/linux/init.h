@@ -1,4 +1,3 @@
-/* 2017-05-25: File changed by Sony Corporation */
 #ifndef _LINUX_INIT_H
 #define _LINUX_INIT_H
 
@@ -142,20 +141,6 @@ extern initcall_t __security_initcall_start[], __security_initcall_end[];
 /* Used for contructor calls. */
 typedef void (*ctor_fn_t)(void);
 
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS
-#include <linux/list.h>
-
-typedef struct deferred_initcall {
-	struct list_head list;
-	const char *name;
-	int (*func)(void);
-	int group;
-} deferred_initcall_t;
-
-extern deferred_initcall_t __deferred_initcall_start[];
-extern deferred_initcall_t __deferred_initcall_end[];
-#endif
-
 /* Defined in init/main.c */
 extern int do_one_initcall(initcall_t fn);
 extern char __initdata boot_command_line[];
@@ -209,21 +194,10 @@ extern bool initcall_debug;
  * can point at the same handler without causing duplicate-symbol build errors.
  */
 
-#ifdef CONFIG_SNSC_BOOT_TIME
-void boot_time_add(char *comment);
-#define __define_initcall(fn,id)					\
-	static int __init __boottime_##fn##id(void) {			\
-		boot_time_add(#fn);					\
-		return fn();						\
-	}								\
-	static initcall_t __initcall_##fn##id __used			\
-	__attribute__((__section__(".initcall" #id ".init"))) = __boottime_##fn##id
-#else  /* CONFIG_SNSC_BOOT_TIME */
-#define __define_initcall(fn,id) \
+#define __define_initcall(fn, id) \
 	static initcall_t __initcall_##fn##id __used \
 	__attribute__((__section__(".initcall" #id ".init"))) = fn; \
 	LTO_REFERENCE_INITCALL(__initcall_##fn##id)
-#endif /* CONFIG_SNSC_BOOT_TIME */
 
 /*
  * Early initcalls run before initializing SMP.
@@ -269,16 +243,6 @@ void boot_time_add(char *comment);
 #define security_initcall(fn) \
 	static initcall_t __initcall_##fn \
 	__used __section(.security_initcall.init) = fn
-
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS
-#define deferred_initcall(fn, grp)				    \
-	static deferred_initcall_t __deferred_initcall_##fn	    \
-	__used __section(.deferred_initcall.init) = {		    \
-		.name  = #fn"()",				    \
-		.func  = fn,					    \
-		.group = grp,					    \
-	}
-#endif
 
 struct obs_kernel_param {
 	const char *str;
@@ -362,10 +326,6 @@ void __init parse_early_options(char *cmdline);
 
 #define console_initcall(fn)		module_init(fn)
 #define security_initcall(fn)		module_init(fn)
-
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS
-#define deferred_initcall(fn, grp)	module_init(fn)
-#endif
 
 /* Each module must use one module_init(). */
 #define module_init(initfn)					\

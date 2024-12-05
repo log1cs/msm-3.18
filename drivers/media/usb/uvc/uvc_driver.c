@@ -1,4 +1,3 @@
-/* 2017-05-25: File changed by Sony Corporation */
 /*
  *      uvc_driver.c  --  USB Video Class driver
  *
@@ -2354,15 +2353,6 @@ static struct usb_device_id uvc_ids[] = {
 	  .bInterfaceSubClass	= 1,
 	  .bInterfaceProtocol	= 0,
 	  .driver_info		= UVC_QUIRK_PROBE_DEF },
-	/* Alienware X51*/
-	{ .match_flags          = USB_DEVICE_ID_MATCH_DEVICE
-				  | USB_DEVICE_ID_MATCH_INT_INFO,
-	  .idVendor             = 0x05a9,
-	  .idProduct            = 0x2643,
-	  .bInterfaceClass      = USB_CLASS_VIDEO,
-	  .bInterfaceSubClass   = 1,
-	  .bInterfaceProtocol   = 0,
-	  .driver_info          = UVC_QUIRK_PROBE_DEF },
 	/* Apple Built-In iSight */
 	{ .match_flags		= USB_DEVICE_ID_MATCH_DEVICE
 				| USB_DEVICE_ID_MATCH_INT_INFO,
@@ -2662,12 +2652,7 @@ static void __exit uvc_cleanup(void)
 	uvc_debugfs_cleanup();
 }
 
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS_USB
-deferred_initcall(uvc_init,
-	CONFIG_SNSC_DEFERRED_INITCALLS_GROUP_USB_VIDEO_CLASS);
-#else
 module_init(uvc_init);
-#endif
 module_exit(uvc_cleanup);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);

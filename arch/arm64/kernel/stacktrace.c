@@ -1,4 +1,3 @@
-/* 2017-04-26: File changed by Sony Corporation */
 /*
  * Stack tracing support
  *
@@ -20,10 +19,8 @@
 #include <linux/kernel.h>
 #include <linux/export.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/stacktrace.h>
 
-#include <asm/irq.h>
 #include <asm/stacktrace.h>
 
 /*
@@ -43,26 +40,11 @@ int notrace unwind_frame(struct stackframe *frame)
 {
 	unsigned long high, low;
 	unsigned long fp = frame->fp;
-	unsigned long irq_stack_ptr;
-
-	/*
-	 * Use raw_smp_processor_id() to avoid false-positives from
-	 * CONFIG_DEBUG_PREEMPT. get_wchan() calls unwind_frame() on sleeping
-	 * task stacks, we can be pre-empted in this case, so
-	 * {raw_,}smp_processor_id() may give us the wrong value. Sleeping
-	 * tasks can't ever be on an interrupt stack, so regardless of cpu,
-	 * the checks will always fail.
-	 */
-	irq_stack_ptr = IRQ_STACK_PTR(raw_smp_processor_id());
 
 	low  = frame->sp;
-	/* irq stacks are not THREAD_SIZE aligned */
-	if (on_irq_stack(frame->sp, raw_smp_processor_id()))
-		high = irq_stack_ptr;
-	else
-		high = ALIGN(low, THREAD_SIZE) - 0x20;
+	high = ALIGN(low, THREAD_SIZE);
 
-	if (fp < low || fp > high || fp & 0xf)
+	if (fp < low || fp > high - 0x18 || fp & 0xf)
 		return -EINVAL;
 
 	kasan_disable_current();
@@ -72,14 +54,6 @@ int notrace unwind_frame(struct stackframe *frame)
 	frame->pc = *(unsigned long *)(fp + 8);
 
 	kasan_enable_current();
-	/*
-	 * Check whether we are going to walk through from interrupt stack
-	 * to task stack.
-	 * If we reach the end of the stack - and its an interrupt stack,
-	 * read the original task stack pointer from the dummy frame.
-	 */
-	if (frame->sp == irq_stack_ptr)
-		frame->sp = IRQ_STACK_TO_TASK_STACK(irq_stack_ptr);
 
 	return 0;
 }
@@ -98,67 +72,6 @@ void notrace walk_stackframe(struct stackframe *frame,
 	}
 }
 EXPORT_SYMBOL(walk_stackframe);
-
-static DEFINE_SPINLOCK(unwind_lock);
-static LIST_HEAD(unwind_tables);
-
-static const struct unwind_idx *unwind_find_origin(
-		const struct unwind_idx *start, const struct unwind_idx *stop)
-{
-	pr_debug("%s(%p, %p)\n", __func__, start, stop);
-	while (start < stop) {
-		const struct unwind_idx *mid = start + ((stop - start) >> 1);
-
-		if (mid->addr_offset >= 0x40000000)
-			/* negative offset */
-			start = mid + 1;
-		else
-			/* positive offset */
-			stop = mid;
-	}
-	pr_debug("%s -> %p\n", __func__, stop);
-	return stop;
-}
-
-struct unwind_table *unwind_table_add(unsigned long start, unsigned long size,
-				      unsigned long text_addr,
-				      unsigned long text_size)
-{
-	unsigned long flags;
-	struct unwind_table *tab = kmalloc(sizeof(*tab), GFP_KERNEL);
-
-	pr_debug("%s(%08lx, %08lx, %08lx, %08lx)\n", __func__, start, size,
-		 text_addr, text_size);
-
-	if (!tab)
-		return tab;
-
-	tab->start = (const struct unwind_idx *)start;
-	tab->stop = (const struct unwind_idx *)(start + size);
-	tab->origin = unwind_find_origin(tab->start, tab->stop);
-	tab->begin_addr = text_addr;
-	tab->end_addr = text_addr + text_size;
-
-	spin_lock_irqsave(&unwind_lock, flags);
-	list_add_tail(&tab->list, &unwind_tables);
-	spin_unlock_irqrestore(&unwind_lock, flags);
-
-	return tab;
-}
-
-void unwind_table_del(struct unwind_table *tab)
-{
-	unsigned long flags;
-
-	if (!tab)
-		return;
-
-	spin_lock_irqsave(&unwind_lock, flags);
-	list_del(&tab->list);
-	spin_unlock_irqrestore(&unwind_lock, flags);
-
-	kfree(tab);
-}
 
 #ifdef CONFIG_STACKTRACE
 struct stack_trace_data {
@@ -209,6 +122,7 @@ void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
 	if (trace->nr_entries < trace->max_entries)
 		trace->entries[trace->nr_entries++] = ULONG_MAX;
 }
+EXPORT_SYMBOL(save_stack_trace_tsk);
 
 void save_stack_trace(struct stack_trace *trace)
 {

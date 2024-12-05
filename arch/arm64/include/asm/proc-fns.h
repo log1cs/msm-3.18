@@ -1,4 +1,3 @@
-/* 2017-03-21: File changed by Sony Corporation */
 /*
  * Based on arch/arm/include/asm/proc-fns.h
  *
@@ -29,24 +28,12 @@
 struct mm_struct;
 struct cpu_suspend_ctx;
 
-extern void cpu_cache_off(void);
 extern void cpu_do_idle(void);
 extern void cpu_do_switch_mm(unsigned long pgd_phys, struct mm_struct *mm);
-extern void cpu_reset(unsigned long addr) __attribute__((noreturn));
-#ifndef CONFIG_MSM_KEXEC
-void cpu_soft_restart(phys_addr_t cpu_reset,
-		unsigned long addr) __attribute__((noreturn));
-#else
-void cpu_soft_restart(unsigned long el2_switch,
-	unsigned long entry, unsigned long arg0, unsigned long arg1,
-	unsigned long arg2)  __attribute__((noreturn));
-#endif
 extern void cpu_do_suspend(struct cpu_suspend_ctx *ptr);
 extern u64 cpu_do_resume(phys_addr_t ptr, u64 idmap_ttbr);
 
 #include <asm/memory.h>
-
-#define cpu_switch_mm(pgd,mm) cpu_do_switch_mm(virt_to_phys(pgd),mm)
 
 #define cpu_get_pgd()					\
 ({							\

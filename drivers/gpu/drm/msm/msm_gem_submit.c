@@ -34,11 +34,11 @@ static inline void __user *to_user_ptr(u64 address)
 }
 
 static struct msm_gem_submit *submit_create(struct drm_device *dev,
-		struct msm_gpu *gpu, uint32_t nr_bos, uint32_t nr_cmds)
+		struct msm_gpu *gpu, uint32_t nr_cmds, uint32_t nr_bos)
 {
 	struct msm_gem_submit *submit;
-	uint64_t sz = sizeof(*submit) + ((u64)nr_bos * sizeof(submit->bos[0])) +
-		((u64)nr_cmds * sizeof(submit->cmd[0]));
+	uint64_t sz = sizeof(*submit) + (nr_bos * sizeof(submit->bos[0])) +
+		(nr_cmds * sizeof(submit->cmd[0]));
 
 	if (sz > SIZE_MAX)
 		return NULL;
@@ -386,7 +386,8 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		void __user *userptr =
 			to_user_ptr(args->cmds + (i * sizeof(submit_cmd)));
 		struct msm_gem_object *msm_obj;
-		uint32_t iova;
+		uint64_t iova;
+		size_t size;
 
 		ret = copy_from_user(&submit_cmd, userptr, sizeof(submit_cmd));
 		if (ret) {
@@ -418,12 +419,12 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 			goto out;
 		}
 
-		if ((submit_cmd.size + submit_cmd.submit_offset) >
-				msm_obj->base.size) {
-			DRM_ERROR(
-			"invalid cmdstream size:%u, offset:%u, base_size:%zu\n",
-				submit_cmd.size, submit_cmd.submit_offset,
-				msm_obj->base.size);
+		size = submit_cmd.size + submit_cmd.submit_offset;
+
+		if (!submit_cmd.size || (size < submit_cmd.size) ||
+			(size > msm_obj->base.size)) {
+			DRM_ERROR("invalid cmdstream offset/size: %u/%u\n",
+				submit_cmd.submit_offset, submit_cmd.size);
 			ret = -EINVAL;
 			goto out;
 		}

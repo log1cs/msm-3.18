@@ -34,7 +34,6 @@
 #include <linux/compat.h>
 #include <linux/cn_proc.h>
 #include <linux/compiler.h>
-#include <linux/exception_monitor.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -2352,14 +2351,6 @@ relock:
 			 */
 			do_coredump(&ksig->info);
 		}
-
-#ifdef CONFIG_SNSC_EM_SIGKILL
-		/*
-		 * call exception monitor on SIGKILL
-		 */
-		if (siginmask(signr, rt_sigmask(SIGKILL)))
-			em_sigkill_show(signal_pt_regs());
-#endif
 
 		/*
 		 * Death signals, no core dump.

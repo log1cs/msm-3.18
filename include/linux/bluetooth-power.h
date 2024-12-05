@@ -1,4 +1,3 @@
-/* 2017-02-17: File changed by Sony Corporation */
 /*
  * Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
@@ -51,10 +50,6 @@ struct bt_power_vreg_data {
 struct bluetooth_power_platform_data {
 	/* Bluetooth reset gpio */
 	int bt_gpio_sys_rst;
-#ifdef CONFIG_MACH_OPENQ820
-	/* Bluetooth MAC address */
-	char bt_mac_address[6];
-#endif
 	/* VDDIO voltage regulator */
 	struct bt_power_vreg_data *bt_vdd_io;
 	/* VDD_PA voltage regulator */

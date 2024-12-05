@@ -1,4 +1,3 @@
-/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  linux/fs/proc/base.c
  *
@@ -92,12 +91,6 @@
 #include <asm/hardwall.h>
 #endif
 #include <trace/events/oom.h>
-#ifdef CONFIG_SNSC_ALT_BACKTRACE_PROC_USTACK
-#include <linux/vmalloc.h>
-#include <linux/syscalls.h>
-#include <linux/snsc_backtrace.h>
-#include <linux/syscalls.h>
-#endif
 #include "internal.h"
 #include "fd.h"
 
@@ -381,236 +374,6 @@ static const struct file_operations proc_lstats_operations = {
 	.release	= single_release,
 };
 
-#endif
-
-#ifdef CONFIG_SNSC_ALT_BACKTRACE_PROC_USTACK
-enum ustack_stop_type {
-	US_NONE,
-	US_PTRACE,
-	US_SIGNAL
-};
-
-static int proc_ustack_stop_pid(pid_t pid)
-{
-	mm_segment_t fs = get_fs();
-	int ret, stat;
-
-	ret = sys_ptrace(PTRACE_ATTACH, pid, 0, 0);
-	if (ret < 0)
-		return ret;
-	set_fs(KERNEL_DS); /* for accessing &stat */
-	ret = sys_wait4(pid, &stat, WUNTRACED|__WALL, NULL);
-	set_fs(fs);
-	if (ret != pid) {
-		sys_ptrace(PTRACE_DETACH, pid, 0, 0);
-		return ret;
-	}
-	return 0;
-}
-
-static int proc_ustack_cont_pid(pid_t pid)
-{
-	return sys_ptrace(PTRACE_DETACH, pid, 0, 0);
-}
-
-struct bt_bufpos {
-	char *buf;
-	size_t size;
-	int ofs;
-};
-
-static int bt_ustack_buf_cb(struct bt_arch_callback_arg *cbarg, void *user)
-{
-	struct bt_bufpos *p = user;
-	p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-			    "[0x%p] ", (void *)cbarg->ba_addr);
-	if (bt_status_is_error(cbarg->ba_status)) {
-		p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-				    "stop backtracing: %s\n", cbarg->ba_str);
-		return 0;
-	}
-#ifdef CONFIG_X86
-	p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-			    "%s", cbarg->reliable ? "" : "? ");
-#endif
-	if (cbarg->ba_sym_start == 0) {
-		/* No symbol information. Show some other information */
-		if (cbarg->ba_file)
-			p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-					    "stripped (%s +%#lx) (%s)\n",
-					    bt_file_name(cbarg->ba_file),
-					    cbarg->ba_addr - cbarg->ba_adjust,
-					    bt_file_name(cbarg->ba_file));
-		else
-			p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-					    "0x%016lx\n",
-					    cbarg->ba_addr);
-		return 0;
-	}
-	else if (cbarg->ba_str[0]) {
-		p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-				    "%s", cbarg->ba_str);
-	}
-	else {
-		p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-				    "0x%p", (void *)cbarg->ba_sym_start);
-	}
-	if (bt_hash_valid(cbarg)) {
-		/* by symlist section */
-		const unsigned char *hash = cbarg->ba_hash;
-		p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-				    "+%#lx (%s hash:%02x%02x%02x%02x adj:%ld)\n",
-				    cbarg->ba_addr - cbarg->ba_sym_start,
-				    bt_file_name(cbarg->ba_file),
-				    hash[0], hash[1], hash[2], hash[3],
-				    cbarg->ba_adjust);
-	}
-	else {
-		/* by symtab section */
-		p->ofs += scnprintf(p->buf + p->ofs, p->size - p->ofs,
-				    "+%#lx/%#lx (%s)\n",
-				    cbarg->ba_addr - cbarg->ba_sym_start,
-				    cbarg->ba_sym_size,
-				    bt_file_name(cbarg->ba_file));
-	}
-	return 0;
-}
-
-/*
- * bt_ustack_task_buf - Format and write result of bt_ustack_task into a buffer
- *
- *  size: The size of the buffer, including the trailing null space
- *
- * The return value is the number of characters written into @buf not including
- * the trailing '\0'.
- */
-static int bt_ustack_task_buf(char *buf, size_t size,
-		       struct task_struct *task,
-		       const char *mode, int is_atomic)
-{
-	struct bt_bufpos p = {
-		.buf = buf,
-		.size = size,
-		.ofs = 0,
-	};
-	bt_ustack_task(task, mode, is_atomic, bt_ustack_buf_cb, &p);
-	return p.ofs;
-}
-
-char *proc_ustack_alloc_bt(struct task_struct *task, enum ustack_stop_type stop)
-{
-	int ret;
-	size_t size = 4096;
-	pid_t pid = pid_nr(task_pid(task));
-	char *buf = vmalloc(size);
-	if (!buf)
-		return 0;
-	if (!task->mm) {
-		scnprintf(buf, size, "kernel thread\n");
-		return buf;
-	}
-	if (task == current)
-		stop = US_NONE;
-	switch (stop) {
-	case US_PTRACE:
-		ret = proc_ustack_stop_pid(pid);
-		if (ret < 0) {
-			scnprintf(buf, size, "stopping task(pid=%d) failed: %d\n",
-				  pid, ret);
-			return buf;
-		}
-		break;
-	case US_SIGNAL:
-		force_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
-		break;
-	case US_NONE:
-		/* do nothing */;
-	}
-	while (buf &&
-	       bt_ustack_task_buf(buf, size, task, NULL, 0) >= size - 1) {
-		size *= 2;
-		vfree(buf);
-		buf = vmalloc(size);
-	}
-	if (stop == US_PTRACE) {
-		proc_ustack_cont_pid(pid);
-	}
-	return buf;
-}
-
-static int proc_ustack_show(struct seq_file *m, void *v)
-{
-	char *str = m->private;
-	seq_puts(m, str);
-	return 0;
-}
-
-static int proc_ustack_open(struct inode *inode, struct file *file)
-{
-	struct task_struct *task = get_proc_task(inode);
-	char *result_buf;
-	if (!task)
-		return -ESRCH;
-	result_buf = proc_ustack_alloc_bt(task, US_PTRACE);
-	put_task_struct(task);
-	if (!result_buf)
-		return -ENOMEM;
-	return single_open(file, proc_ustack_show, result_buf);
-}
-
-static int proc_ustack_raw_open(struct inode *inode, struct file *file)
-{
-	struct task_struct *task = get_proc_task(inode);
-	char *result_buf;
-	if (!task)
-		return -ESRCH;
-	result_buf = proc_ustack_alloc_bt(task, US_NONE);
-	put_task_struct(task);
-	if (!result_buf)
-		return -ENOMEM;
-	return single_open(file, proc_ustack_show, result_buf);
-}
-
-static int proc_ustack_nowait_open(struct inode *inode, struct file *file)
-{
-	struct task_struct *task = get_proc_task(inode);
-	char *result_buf;
-	if (!task)
-		return -ESRCH;
-	result_buf = proc_ustack_alloc_bt(task, US_SIGNAL);
-	put_task_struct(task);
-	if (!result_buf)
-		return -ENOMEM;
-	return single_open(file, proc_ustack_show, result_buf);
-}
-
-static int proc_ustack_release(struct inode *inode, struct file *file)
-{
-	struct seq_file *seq = file->private_data;
-	vfree(seq->private);
-	return single_release(inode, file);
-}
-
-static const struct file_operations proc_ustack_operations = {
-	.open		= proc_ustack_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= proc_ustack_release,
-};
-
-static const struct file_operations proc_ustack_raw_operations = {
-	.open		= proc_ustack_raw_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= proc_ustack_release,
-};
-
-static const struct file_operations proc_ustack_nowait_operations = {
-	.open		= proc_ustack_nowait_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= proc_ustack_release,
-};
 #endif
 
 static int proc_oom_score(struct seq_file *m, struct pid_namespace *ns,
@@ -2177,7 +1940,7 @@ static int proc_map_files_get_link(struct dentry *dentry, struct path *path)
 	down_read(&mm->mmap_sem);
 	vma = find_exact_vma(mm, vm_start, vm_end);
 	if (vma && vma->vm_file) {
-		*path = vma_pr_or_file(vma)->f_path;
+		*path = vma->vm_file->f_path;
 		path_get(path);
 		rc = 0;
 	}
@@ -3055,8 +2818,8 @@ static const struct pid_entry tgid_base_stuff[] = {
 	ONE("cgroup",  S_IRUGO, proc_cgroup_show),
 #endif
 	ONE("oom_score",  S_IRUGO, proc_oom_score),
-	REG("oom_adj",    S_IRUGO|S_IWUSR, proc_oom_adj_operations),
-	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
+	REG("oom_adj",    S_IRUSR, proc_oom_adj_operations),
+	REG("oom_score_adj", S_IRUSR, proc_oom_score_adj_operations),
 #ifdef CONFIG_AUDITSYSCALL
 	REG("loginuid",   S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),
@@ -3440,8 +3203,8 @@ static const struct pid_entry tid_base_stuff[] = {
 	ONE("cgroup",  S_IRUGO, proc_cgroup_show),
 #endif
 	ONE("oom_score", S_IRUGO, proc_oom_score),
-	REG("oom_adj",   S_IRUGO|S_IWUSR, proc_oom_adj_operations),
-	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
+	REG("oom_adj",   S_IRUSR, proc_oom_adj_operations),
+	REG("oom_score_adj", S_IRUSR, proc_oom_score_adj_operations),
 #ifdef CONFIG_AUDITSYSCALL
 	REG("loginuid",  S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),
@@ -3461,12 +3224,6 @@ static const struct pid_entry tid_base_stuff[] = {
 	REG("projid_map", S_IRUGO|S_IWUSR, proc_projid_map_operations),
 	REG("setgroups",  S_IRUGO|S_IWUSR, proc_setgroups_operations),
 #endif
-#ifdef CONFIG_SNSC_ALT_BACKTRACE_PROC_USTACK
-	REG("ustack", S_IRUGO, proc_ustack_operations),
-	REG("ustack_raw", S_IRUGO, proc_ustack_raw_operations),
-	REG("ustack_nowait", S_IRUGO, proc_ustack_nowait_operations),
-#endif
-
 };
 
 static int proc_tid_base_readdir(struct file *file, struct dir_context *ctx)

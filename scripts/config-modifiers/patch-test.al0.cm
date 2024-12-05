@@ -1,6 +1,0 @@
-#!/bin/sh
-
-scripts/setconfig.py -f - <<_EOF_
-CONFIG_MSM_SMEM_LOGGING=n
-CONFIG_DEBUG_KMEMLEAK_EARLY_LOG_SIZE=5000
-_EOF_

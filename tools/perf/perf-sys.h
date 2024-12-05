@@ -165,6 +165,8 @@
 #define CPUINFO_PROC    {"model name"}
 #endif
 
+#define barrier() asm volatile ("" ::: "memory")
+
 #ifndef cpu_relax
 #define cpu_relax() barrier()
 #endif

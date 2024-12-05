@@ -1,4 +1,3 @@
-/* 2017-11-13: File changed by Sony Corporation */
 /*
  * Copyright (C) 1992, 1998-2006 Linus Torvalds, Ingo Molnar
  * Copyright (C) 2005-2006, Thomas Gleixner, Russell King
@@ -351,14 +350,6 @@ void irq_init_desc(unsigned int irq)
 int generic_handle_irq(unsigned int irq)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
-#ifdef CONFIG_SNSC_LCTRACER
-	u64 t1 = 0;
-	u64 t2 = 0;
-	u32 delta = 0;
-
-	if (snsc_lctracer_is_running())
-		t1 = sched_clock();
-#endif
 
 	if (!desc)
 		return -EINVAL;
@@ -367,15 +358,6 @@ int generic_handle_irq(unsigned int irq)
 		return log_possible_wakeup_reason(irq,
 				desc,
 				generic_handle_irq_desc);
-#ifdef CONFIG_SNSC_LCTRACER
-	if (snsc_lctracer_is_running()) {
-		t2 = sched_clock();
-		delta = t2 - t1;
-		delta /= 1000;
-		snsc_lctracer_add_trace_entry(current, current,
-					      irq | (delta << 16));
-	}
-#endif
 
 	return generic_handle_irq_desc(irq, desc);
 }

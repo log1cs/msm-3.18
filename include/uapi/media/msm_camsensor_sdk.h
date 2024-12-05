@@ -1,4 +1,3 @@
-/* 2017-01-05: File changed by Sony Corporation */
 #ifndef __UAPI_LINUX_MSM_CAMSENSOR_SDK_H
 #define __UAPI_LINUX_MSM_CAMSENSOR_SDK_H
 
@@ -70,7 +69,6 @@ enum i2c_freq_mode_t {
 enum camb_position_t {
 	BACK_CAMERA_B,
 	FRONT_CAMERA_B,
-	FRONT2_CAMERA_B,
 	AUX_CAMERA_B = 0x100,
 	INVALID_CAMERA_B,
 };
@@ -166,7 +164,6 @@ enum msm_actuator_write_type {
 	MSM_ACTUATOR_WRITE_DIR_REG,
 	MSM_ACTUATOR_POLL,
 	MSM_ACTUATOR_READ_WRITE,
-	MSM_ACTUATOR_WRITE_DAC_MSB,
 };
 
 enum msm_actuator_i2c_operation {
@@ -368,9 +365,6 @@ struct msm_camera_i2c_seq_reg_array {
 };
 
 struct msm_camera_i2c_seq_reg_setting {
-/* extension begin */
-	unsigned short slave_addr;
-/* extension end */
 	struct msm_camera_i2c_seq_reg_array *reg_setting;
 	unsigned short size;
 	enum msm_camera_i2c_reg_addr_type addr_type;

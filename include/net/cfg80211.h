@@ -78,6 +78,7 @@ struct wiphy;
 #define CFG80211_BEACON_TX_RATE_CUSTOM_BACKPORT 1
 #define CFG80211_RAND_TA_FOR_PUBLIC_ACTION_FRAME 1
 #define CFG80211_REPORT_BETTER_BSS_IN_SCHED_SCAN 1
+#define CFG80211_BEACON_INTERVAL_BACKPORT 1
 
 /*
  * wireless hardware capability structures
@@ -1642,6 +1643,8 @@ struct cfg80211_bss_select_adjust {
  *	using @relative_rssi. If delta is a negative number, the BSSs that
  *	belong to the specified band will be penalized by delta dB in relative
  *	comparisions.
+ * @owner_nlportid: netlink portid of owner (if this should is a request
+ *	owned by a particular socket)
  */
 struct cfg80211_sched_scan_request {
 	struct cfg80211_ssid *ssids;

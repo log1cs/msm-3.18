@@ -1,5 +1,4 @@
-/* 2017-02-17: File changed by Sony Corporation */
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,9 +13,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/spmi.h>
-#ifdef CONFIG_AL0_RAMDUMP
-#include <linux/rdtags.h>
-#endif
 #include <linux/err.h>
 #include <linux/qpnp/qpnp-revid.h>
 
@@ -52,10 +48,12 @@ static const char *const pmic_names[] = {
 	[PMI8950_SUBTYPE] = "PMI8950",
 	[PMK8001_SUBTYPE] = "PMK8001",
 	[PMI8996_SUBTYPE] = "PMI8996",
-	[PMCOBALT_SUBTYPE] = "PMCOBALT",
-	[PMICOBALT_SUBTYPE] = "PMICOBALT",
+	[PM8998_SUBTYPE] = "PM8998",
+	[PMI8998_SUBTYPE] = "PMI8998",
 	[PM8005_SUBTYPE] = "PM8005",
 	[PM8937_SUBTYPE] = "PM8937",
+	[PM660L_SUBTYPE] = "PM660L",
+	[PM660_SUBTYPE] = "PM660",
 	[PMI8937_SUBTYPE] = "PMI8937",
 	[PMI8940_SUBTYPE] = "PMI8940",
 };
@@ -126,12 +124,6 @@ static size_t build_pmic_string(char *buf, size_t n, int sid,
 		u8 subtype, u8 rev1, u8 rev2, u8 rev3, u8 rev4)
 {
 	size_t pos = 0;
-#ifdef CONFIG_AL0_RAMDUMP
-	char tag_name[64];
-	char tag_data[64];
-	int version_pos = 1;
-#endif
-
 	/*
 	 * In early versions of PM8941 and PM8226, the major revision number
 	 * started incrementing from 0 (eg 0 = v1.0, 1 = v2.0).
@@ -144,64 +136,19 @@ static size_t build_pmic_string(char *buf, size_t n, int sid,
 		rev4++;
 
 	pos += snprintf(buf + pos, n - pos, "PMIC@SID%d", sid);
-	if (subtype >= ARRAY_SIZE(pmic_names) || subtype == 0) {
+	if (subtype >= ARRAY_SIZE(pmic_names) || subtype == 0)
 		pos += snprintf(buf + pos, n - pos, ": %s (subtype: 0x%02X)",
 				pmic_names[0], subtype);
-#ifdef CONFIG_AL0_RAMDUMP
-		snprintf(tag_name, sizeof(tag_name), "pmic_%s_revision_str",
-				pmic_names[0]);
-#endif
-	} else {
+	else
 		pos += snprintf(buf + pos, n - pos, ": %s",
 				pmic_names[subtype]);
-#ifdef CONFIG_AL0_RAMDUMP
-		snprintf(tag_name, sizeof(tag_name), "pmic_%s_revision_str",
-				pmic_names[subtype]);
-#endif
-	}
-
-#ifdef CONFIG_AL0_RAMDUMP
-	version_pos += strlen(buf);
-#endif
 	pos += snprintf(buf + pos, n - pos, " v%d.%d", rev4, rev3);
 	if (rev2 || rev1)
 		pos += snprintf(buf + pos, n - pos, ".%d", rev2);
 	if (rev1)
 		pos += snprintf(buf + pos, n - pos, ".%d", rev1);
-
-#ifdef CONFIG_AL0_RAMDUMP
-	snprintf(tag_data, sizeof(tag_data), "%s", buf + version_pos);
-	rdtags_add_tag(tag_name, tag_data, strlen(tag_data));
-#endif
 	return pos;
 }
-
-#ifdef CONFIG_MACH_OPENQ820
-static ssize_t pmic_id_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct spmi_device *spmi_dev = to_spmi_device(dev);
-	struct pmic_revid_data *pmic_rev_id;
-
-	pmic_rev_id = get_revid_data(spmi_dev->dev.of_node);
-
-	pr_info("pmic_id: %s\n", pmic_rev_id->pmic_name);
-	return sprintf(buf, "%s", pmic_rev_id->pmic_name);
-}
-
-static DEVICE_ATTR(pmic_id, S_IRUSR|S_IRGRP|S_IROTH, pmic_id_show, NULL);
-
-static struct attribute *pmic_id_attributes[] = {
-	&dev_attr_pmic_id.attr,
-	NULL
-};
-
-static const struct attribute_group pmic_id_group = {
-	.attrs		= pmic_id_attributes,
-};
-
-static int num_pmic = 0;
-#endif
 
 #define PMIC_PERIPHERAL_TYPE		0x51
 #define PMIC_STRING_MAXLENGTH		80
@@ -212,10 +159,6 @@ static int qpnp_revid_probe(struct spmi_device *spmi)
 	struct resource *resource;
 	char pmic_string[PMIC_STRING_MAXLENGTH] = {'\0'};
 	struct revid_chip *revid_chip;
-#ifdef CONFIG_MACH_OPENQ820
-	int err;
-	char link_name[18];
-#endif
 
 	resource = spmi_get_resource(spmi, NULL, IORESOURCE_MEM, 0);
 	if (!resource) {
@@ -290,22 +233,6 @@ static int qpnp_revid_probe(struct spmi_device *spmi)
 			pmic_subtype, rev1, rev2, rev3, rev4);
 	pr_info("%s options: %d, %d, %d, %d\n",
 			pmic_string, option1, option2, option3, option4);
-
-#ifdef CONFIG_MACH_OPENQ820
-	err = sysfs_create_group(&spmi->dev.kobj, &pmic_id_group);
-	if (err){
-		pr_err("%s: sysfs entry creation failed.\n", __func__);
-		return err;
-	}
-	/* create consistent device link */
-	sprintf(link_name, "%s.%d", QPNP_REVID_DEV_NAME, num_pmic++);
-	err = sysfs_create_link(&spmi->dev.parent->kobj, &spmi->dev.kobj, link_name);
-	if (err){
-		pr_err("%s: sysfs link creation failed.\n", __func__);
-		return err;
-	}
-#endif
-
 	return 0;
 }
 

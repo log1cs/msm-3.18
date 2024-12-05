@@ -1,4 +1,3 @@
-/* 2017-06-01: File changed by Sony Corporation */
 /*
  *  linux/kernel/printk.c
  *
@@ -1430,17 +1429,7 @@ static void call_console_drivers(int level, const char *text, size_t len)
 		if (!cpu_online(smp_processor_id()) &&
 		    !(con->flags & CON_ANYTIME))
 			continue;
-#ifndef CONFIG_PRINTK_SHORT_IRQ_DISABLE
 		con->write(con, text, len);
-#else
-		/* Write bytes one at a time */
-		{
-			int i;
-			for (i = 0; i < len; i++) {
-				con->write( con, (text + i), 1);
-			}
-		}
-#endif
 	}
 }
 

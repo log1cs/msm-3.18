@@ -35,7 +35,6 @@
 #include <linux/freezer.h>
 #include <linux/ftrace.h>
 #include <linux/ratelimit.h>
-#include <linux/exception_monitor.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/oom.h>
@@ -529,10 +528,6 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 	rcu_read_unlock();
 
 	set_tsk_thread_flag(victim, TIF_MEMDIE);
-#ifdef CONFIG_SNSC_EM_MEMKILLER
-	/* tell the exception monitor to dump this pid's information */
-	em_sigkill_setpid(victim->pid);
-#endif
 	do_send_sig_info(SIGKILL, SEND_SIG_FORCED, victim, true);
 	put_task_struct(victim);
 }

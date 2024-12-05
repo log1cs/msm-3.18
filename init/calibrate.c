@@ -1,4 +1,3 @@
-/* 2017-05-08: File changed by Sony Corporation */
 /* calibrate.c: default delay calibration
  *
  * Excised from init/main.c
@@ -11,7 +10,6 @@
 #include <linux/timex.h>
 #include <linux/smp.h>
 #include <linux/percpu.h>
-#include <linux/snsc_boot_time.h>
 
 unsigned long lpj_fine;
 unsigned long preset_lpj;
@@ -279,7 +277,6 @@ void calibrate_delay(void)
 	static bool printed;
 	int this_cpu = smp_processor_id();
 
-	BOOT_TIME_ADD();
 	if (per_cpu(cpu_loops_per_jiffy, this_cpu)) {
 		lpj = per_cpu(cpu_loops_per_jiffy, this_cpu);
 		if (!printed)

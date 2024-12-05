@@ -1,4 +1,3 @@
-/* 2016-06-01: File changed by Sony Corporation */
 /*
  * Persistent Storage - platform driver interface parts.
  *
@@ -37,9 +36,6 @@
 #include <linux/hardirq.h>
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
-#ifdef CONFIG_AL0_RAMDUMP
-#include <soc/qcom/hwconfig_status.h>
-#endif
 
 #include "internal.h"
 
@@ -392,13 +388,6 @@ static struct console pstore_console = {
 
 static void pstore_register_console(void)
 {
-#ifdef CONFIG_AL0_RAMDUMP
-	if (get_hw_config_status()) {
-		pr_info("Skip pstore console register\n");
-		return;
-	}
-#endif
-
 	register_console(&pstore_console);
 }
 #else

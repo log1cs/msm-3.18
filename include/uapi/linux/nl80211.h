@@ -1,4 +1,3 @@
-/* 2017-03-30: File changed by Sony Corporation */
 #ifndef __LINUX_NL80211_H
 #define __LINUX_NL80211_H
 /*
@@ -3579,7 +3578,6 @@ enum nl80211_mfp {
 enum nl80211_wpa_versions {
 	NL80211_WPA_VERSION_1 = 1 << 0,
 	NL80211_WPA_VERSION_2 = 1 << 1,
-	NL80211_WAPI_VERSION_1 = 1 << 2,
 };
 
 /**

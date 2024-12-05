@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017, Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017, 2020 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -201,7 +201,8 @@ static int lsm_lab_buffer_sanity(struct lsm_priv *prtd,
 }
 
 static void lsm_event_handler(uint32_t opcode, uint32_t token,
-			      void *payload, void *priv)
+			      void *payload, uint16_t client_size,
+				void *priv)
 {
 	unsigned long flags;
 	struct lsm_priv *prtd = priv;
@@ -269,6 +270,12 @@ static void lsm_event_handler(uint32_t opcode, uint32_t token,
 	}
 
 	case LSM_SESSION_EVENT_DETECTION_STATUS:
+		if (client_size < 3 * sizeof(uint8_t)) {
+			dev_err(rtd->dev,
+					"%s: client_size has invalid size[%d]\n",
+					__func__, client_size);
+			return;
+		}
 		status = (uint16_t)((uint8_t *)payload)[0];
 		payload_size = (uint16_t)((uint8_t *)payload)[2];
 		index = 4;
@@ -278,6 +285,12 @@ static void lsm_event_handler(uint32_t opcode, uint32_t token,
 	break;
 
 	case LSM_SESSION_EVENT_DETECTION_STATUS_V2:
+		if (client_size < 2 * sizeof(uint8_t)) {
+			dev_err(rtd->dev,
+					"%s: client_size has invalid size[%d]\n",
+					__func__, client_size);
+			return;
+		}
 		status = (uint16_t)((uint8_t *)payload)[0];
 		payload_size = (uint16_t)((uint8_t *)payload)[1];
 		index = 2;
@@ -287,6 +300,12 @@ static void lsm_event_handler(uint32_t opcode, uint32_t token,
 		break;
 
 	case LSM_SESSION_EVENT_DETECTION_STATUS_V3:
+		if (client_size < 2 * (sizeof(uint32_t) + sizeof(uint8_t))) {
+			dev_err(rtd->dev,
+					"%s: client_size has invalid size[%d]\n",
+					__func__, client_size);
+			return;
+		}
 		event_ts_lsw = ((uint32_t *)payload)[0];
 		event_ts_msw = ((uint32_t *)payload)[1];
 		status = (uint16_t)((uint8_t *)payload)[8];
@@ -324,12 +343,22 @@ static void lsm_event_handler(uint32_t opcode, uint32_t token,
 		prtd->event_status->payload_size = payload_size;
 
 		if (likely(prtd->event_status)) {
-			memcpy(prtd->event_status->payload,
-			       &((uint8_t *)payload)[index],
-			       payload_size);
-			prtd->event_avail = 1;
-			spin_unlock_irqrestore(&prtd->event_lock, flags);
-			wake_up(&prtd->event_wait);
+			if (client_size >= (payload_size + index)) {
+				memcpy(prtd->event_status->payload,
+					&((uint8_t *)payload)[index],
+					payload_size);
+				prtd->event_avail = 1;
+				spin_unlock_irqrestore(&prtd->event_lock,
+							flags);
+				wake_up(&prtd->event_wait);
+			} else {
+				spin_unlock_irqrestore(&prtd->event_lock,
+							flags);
+				dev_err(rtd->dev,
+						"%s: Failed to copy memory with invalid size = %d\n",
+						__func__, payload_size);
+				return;
+			}
 		} else {
 			spin_unlock_irqrestore(&prtd->event_lock, flags);
 			dev_err(rtd->dev,
@@ -1191,28 +1220,27 @@ static int msm_lsm_ioctl_shared(struct snd_pcm_substream *substream,
 		break;
 
 	case SNDRV_LSM_SET_FWK_MODE_CONFIG: {
-		u32 *mode = NULL;
+		u32 mode;
 
-		if (!arg) {
-			dev_err(rtd->dev,
-				"%s: Invalid param arg for ioctl %s session %d\n",
-				__func__, "SNDRV_LSM_SET_FWK_MODE_CONFIG",
-				prtd->lsm_client->session);
-			rc = -EINVAL;
-			break;
+		if (copy_from_user(&mode, arg, sizeof(mode))) {
+			dev_err(rtd->dev, "%s: %s: copy_frm_user failed\n",
+				__func__, "LSM_SET_FWK_MODE_CONFIG");
+			return -EFAULT;
 		}
-		mode = (u32 *)arg;
-		if (prtd->lsm_client->event_mode == *mode) {
+
+		dev_dbg(rtd->dev, "%s: ioctl %s, enable = %d\n",
+			__func__, "SNDRV_LSM_SET_FWK_MODE_CONFIG", mode);
+		if (prtd->lsm_client->event_mode == mode) {
 			dev_dbg(rtd->dev,
 				"%s: mode for %d already set to %d\n",
-				__func__, prtd->lsm_client->session, *mode);
+				__func__, prtd->lsm_client->session, mode);
 			rc = 0;
 		} else {
 			dev_dbg(rtd->dev, "%s: Event mode = %d\n",
-				 __func__, *mode);
-			rc = q6lsm_set_fwk_mode_cfg(prtd->lsm_client, *mode);
+				 __func__, mode);
+			rc = q6lsm_set_fwk_mode_cfg(prtd->lsm_client, mode);
 			if (!rc)
-				prtd->lsm_client->event_mode = *mode;
+				prtd->lsm_client->event_mode = mode;
 			else
 				dev_err(rtd->dev,
 					"%s: set event mode failed %d\n",
@@ -1334,7 +1362,7 @@ static int msm_lsm_ioctl_compat(struct snd_pcm_substream *substream,
 		}
 
 		size = sizeof(*user) + userarg32.payload_size;
-		user = kmalloc(size, GFP_KERNEL);
+		user = kzalloc(size, GFP_KERNEL);
 		if (!user) {
 			dev_err(rtd->dev,
 				"%s: Allocation failed event status size %d\n",
@@ -1355,7 +1383,7 @@ static int msm_lsm_ioctl_compat(struct snd_pcm_substream *substream,
 			err = -EFAULT;
 		}
 		if (!err) {
-			user32 = kmalloc(size, GFP_KERNEL);
+			user32 = kzalloc(size, GFP_KERNEL);
 			if (!user32) {
 				dev_err(rtd->dev,
 					"%s: Allocation event user status size %d\n",
@@ -1400,7 +1428,7 @@ static int msm_lsm_ioctl_compat(struct snd_pcm_substream *substream,
 		}
 
 		size = sizeof(*user) + userarg32.payload_size;
-		user = kmalloc(size, GFP_KERNEL);
+		user = kzalloc(size, GFP_KERNEL);
 		if (!user) {
 			dev_err(rtd->dev,
 				"%s: Allocation failed event status size %d\n",
@@ -1420,7 +1448,7 @@ static int msm_lsm_ioctl_compat(struct snd_pcm_substream *substream,
 			err = -EFAULT;
 		}
 		if (!err) {
-			user32 = kmalloc(size, GFP_KERNEL);
+			user32 = kzalloc(size, GFP_KERNEL);
 			if (!user32) {
 				dev_err(rtd->dev,
 					"%s: Allocation event user status size %d\n",
@@ -1706,7 +1734,6 @@ static int msm_lsm_ioctl(struct snd_pcm_substream *substream,
 			dev_err(rtd->dev,
 				"%s REG_SND_MODEL failed err %d\n",
 				__func__, err);
-		return err;
 		}
 		break;
 	case SNDRV_LSM_SET_PARAMS: {
@@ -1836,7 +1863,7 @@ static int msm_lsm_ioctl(struct snd_pcm_substream *substream,
 
 		size = sizeof(struct snd_lsm_event_status) +
 		userarg.payload_size;
-		user = kmalloc(size, GFP_KERNEL);
+		user = kzalloc(size, GFP_KERNEL);
 		if (!user) {
 			dev_err(rtd->dev,
 				"%s: Allocation failed event status size %d\n",
@@ -1896,7 +1923,7 @@ static int msm_lsm_ioctl(struct snd_pcm_substream *substream,
 
 		size = sizeof(struct snd_lsm_event_status_v3) +
 			userarg.payload_size;
-		user = kmalloc(size, GFP_KERNEL);
+		user = kzalloc(size, GFP_KERNEL);
 		if (!user) {
 			dev_err(rtd->dev,
 				"%s: Allocation failed event status size %d\n",

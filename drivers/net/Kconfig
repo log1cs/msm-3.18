@@ -360,6 +360,4 @@ config VMXNET3
 
 source "drivers/net/hyperv/Kconfig"
 
-source drivers/net/Kconfig.snsc
-
 endif # NETDEVICES

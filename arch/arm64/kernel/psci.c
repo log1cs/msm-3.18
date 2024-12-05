@@ -1,4 +1,3 @@
-/* 2016-11-15: File changed by Sony Corporation */
 /*
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -23,7 +22,6 @@
 #include <linux/pm.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <linux/suspend.h>
 #include <uapi/linux/psci.h>
 
 #include <asm/compiler.h>
@@ -40,27 +38,13 @@
 
 #define PSCI_POWER_STATE_BIT	BIT(30)
 
-struct psci_power_state {
-	u16	id;
-	u8	type;
-	u8	affinity_level;
-};
-
-struct psci_operations {
-	int (*cpu_suspend)(unsigned long state_id,
-			   unsigned long entry_point);
-	int (*cpu_off)(struct psci_power_state state);
-	int (*cpu_on)(unsigned long cpuid, unsigned long entry_point);
-	int (*migrate)(unsigned long cpuid);
-	int (*affinity_info)(unsigned long target_affinity,
-			unsigned long lowest_affinity_level);
-	int (*migrate_info_type)(void);
-};
-
-static struct psci_operations psci_ops;
+struct psci_operations psci_ops;
 
 static int (*invoke_psci_fn)(u64, u64, u64, u64);
 typedef int (*psci_initcall_t)(const struct device_node *);
+
+asmlinkage int __invoke_psci_fn_hvc(u64, u64, u64, u64);
+asmlinkage int __invoke_psci_fn_smc(u64, u64, u64, u64);
 
 enum psci_function {
 	PSCI_FN_CPU_SUSPEND,
@@ -112,50 +96,6 @@ static void psci_power_state_unpack(u32 power_state,
 	state->affinity_level =
 			(power_state & PSCI_0_2_POWER_STATE_AFFL_MASK) >>
 			PSCI_0_2_POWER_STATE_AFFL_SHIFT;
-}
-
-/*
- * The following two functions are invoked via the invoke_psci_fn pointer
- * and will not be inlined, allowing us to piggyback on the AAPCS.
- */
-static noinline int __invoke_psci_fn_hvc(u64 _function_id, u64 _arg0,
-					 u64 _arg1, u64 _arg2)
-{
-	register u64 function_id asm("x0") = _function_id;
-	register u64 arg0 asm("x1") = _arg0;
-	register u64 arg1 asm("x2") = _arg1;
-	register u64 arg2 asm("x3") = _arg2;
-
-	asm volatile(
-			__asmeq("%0", "x0")
-			__asmeq("%1", "x1")
-			__asmeq("%2", "x2")
-			__asmeq("%3", "x3")
-			"hvc	#0\n"
-		: "+r" (function_id)
-		: "r" (arg0), "r" (arg1), "r" (arg2));
-
-	return function_id;
-}
-
-static noinline int __invoke_psci_fn_smc(u64 _function_id, u64 _arg0,
-					 u64 _arg1, u64 _arg2)
-{
-	register u64 function_id asm("x0") = _function_id;
-	register u64 arg0 asm("x1") = _arg0;
-	register u64 arg1 asm("x2") = _arg1;
-	register u64 arg2 asm("x3") = _arg2;
-
-	asm volatile(
-			__asmeq("%0", "x0")
-			__asmeq("%1", "x1")
-			__asmeq("%2", "x2")
-			__asmeq("%3", "x3")
-			"smc	#0\n"
-		: "+r" (function_id)
-		: "r" (arg0), "r" (arg1), "r" (arg2));
-
-	return function_id;
 }
 
 static int psci_get_version(void)
@@ -318,27 +258,6 @@ static void psci_sys_poweroff(void)
 	invoke_psci_fn(PSCI_0_2_FN_SYSTEM_OFF, 0, 0, 0);
 }
 
-static int psci_system_suspend(unsigned long unused)
-{
-	return invoke_psci_fn(PSCI_0_2_FN64_SYSTEM_SUSPEND,
-			      virt_to_phys(cpu_resume), 0, 0);
-}
-
-static int psci_system_suspend_enter(suspend_state_t state)
-{
-	return __cpu_suspend(0, psci_system_suspend);
-}
-
-static const struct platform_suspend_ops psci_suspend_ops = {
-	.valid          = suspend_valid_only_mem,
-	.enter          = psci_system_suspend_enter,
-};
-
-static void __init psci_init_system_suspend(void)
-{
-	suspend_set_ops(&psci_suspend_ops);
-}
-
 /*
  * PSCI Function IDs for v0.2+ are well defined so use
  * standard values.
@@ -371,6 +290,7 @@ static int __init psci_1_0_init(struct device_node *np)
 	}
 
 	pr_info("Using standard PSCI v0.2 function IDs\n");
+	psci_ops.get_version = psci_get_version;
 	psci_function_id[PSCI_FN_CPU_SUSPEND] = PSCI_0_2_FN64_CPU_SUSPEND;
 	psci_ops.cpu_suspend = psci_cpu_suspend;
 
@@ -424,6 +344,7 @@ static int __init psci_0_2_init(struct device_node *np)
 	}
 
 	pr_info("Using standard PSCI v0.2 function IDs\n");
+	psci_ops.get_version = psci_get_version;
 	psci_function_id[PSCI_FN_CPU_SUSPEND] = PSCI_0_2_FN64_CPU_SUSPEND;
 	psci_ops.cpu_suspend = psci_cpu_suspend;
 
@@ -447,8 +368,6 @@ static int __init psci_0_2_init(struct device_node *np)
 
 	pm_power_off = psci_sys_poweroff;
 
-	psci_init_system_suspend();
-
 out_put_node:
 	of_node_put(np);
 	return err;
@@ -468,6 +387,7 @@ static int __init psci_0_1_init(struct device_node *np)
 		goto out_put_node;
 
 	pr_info("Using PSCI v0.1 Function IDs from DT\n");
+	psci_ops.get_version = psci_get_version;
 
 	if (!of_property_read_u32(np, "cpu_suspend", &id)) {
 		psci_function_id[PSCI_FN_CPU_SUSPEND] = id;
@@ -515,8 +435,6 @@ int __init psci_init(void)
 	init_fn = (psci_initcall_t)matched_np->data;
 	return init_fn(np);
 }
-
-#ifdef CONFIG_SMP
 
 static int __init cpu_psci_cpu_init(struct device_node *dn, unsigned int cpu)
 {
@@ -597,7 +515,6 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 	return 0;
 }
 #endif
-#endif
 
 static int psci_suspend_finisher(unsigned long state_id)
 {
@@ -621,7 +538,6 @@ static struct cpu_operations cpu_psci_ops = {
 	.cpu_init_idle	= cpu_psci_cpu_init_idle,
 	.cpu_suspend	= cpu_psci_cpu_suspend,
 #endif
-#ifdef CONFIG_SMP
 	.cpu_init	= cpu_psci_cpu_init,
 #ifdef CONFIG_ARM64_CPU_SUSPEND
 	.cpu_suspend	= cpu_psci_cpu_suspend,
@@ -632,7 +548,6 @@ static struct cpu_operations cpu_psci_ops = {
 	.cpu_disable	= cpu_psci_cpu_disable,
 	.cpu_die	= cpu_psci_cpu_die,
 	.cpu_kill	= cpu_psci_cpu_kill,
-#endif
 #endif
 };
 CPU_METHOD_OF_DECLARE(psci, "psci", &cpu_psci_ops);

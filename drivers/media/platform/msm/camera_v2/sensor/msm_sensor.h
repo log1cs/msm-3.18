@@ -1,4 +1,3 @@
-/* 2017-01-05: File changed by Sony Corporation */
 /* Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -95,12 +94,6 @@ struct msm_sensor_ctrl_t {
 
 int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp);
 
-#if defined(CONFIG_SONY_CAM_V4L2)
-#ifdef CONFIG_COMPAT
-int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp);
-#endif
-#endif
-
 int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl);
 
 int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl);
@@ -108,11 +101,6 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl);
 int msm_sensor_check_id(struct msm_sensor_ctrl_t *s_ctrl);
 
 int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl);
-
-#if defined(CONFIG_SONY_CAM_V4L2)
-int32_t msm_sensor_platform_probe(struct platform_device *pdev,
-	const void *data);
-#endif
 
 int msm_sensor_update_cfg(struct msm_sensor_ctrl_t *s_ctrl);
 

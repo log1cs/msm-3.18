@@ -1,4 +1,3 @@
-/* 2017-05-10: File changed by Sony Corporation */
 /*
  *
  * Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.

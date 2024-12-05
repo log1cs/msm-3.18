@@ -191,17 +191,8 @@ static struct page **get_pages(struct drm_gem_object *obj)
 static void put_pages(struct drm_gem_object *obj)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	int id;
 
 	if (msm_obj->pages) {
-		for (id = 0; id < ARRAY_SIZE(msm_obj->domain); id++) {
-			if (msm_obj->domain[id].sgt) {
-				sg_free_table(msm_obj->domain[id].sgt);
-				kfree(msm_obj->domain[id].sgt);
-				msm_obj->domain[id].sgt = NULL;
-			}
-		}
-
 		if (use_pages(obj))
 			msm_drm_free_buf(obj);
 		else {
@@ -299,7 +290,7 @@ int msm_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 
 	pfn = page_to_pfn(pages[pgoff]);
 
-	VERB("Inserting %p pfn %lx, pa %lx", vmf->virtual_address,
+	VERB("Inserting %pK pfn %lx, pa %lx", vmf->virtual_address,
 			pfn, pfn << PAGE_SHIFT);
 
 	ret = vm_insert_mixed(vma, (unsigned long)vmf->virtual_address, pfn);
@@ -408,7 +399,7 @@ int msm_gem_get_iova_locked(struct drm_gem_object *obj, int id,
 						msm_obj->domain[id].sgt,
 						IOMMU_READ | IOMMU_NOEXEC);
 				if (ret) {
-					DRM_ERROR("Unable to map phy buf=%p\n",
+					DRM_ERROR("Unable to map phy buf=%pK\n",
 						(void *)pa);
 					return ret;
 				}
@@ -423,7 +414,7 @@ int msm_gem_get_iova_locked(struct drm_gem_object *obj, int id,
 				msm_obj->domain[id].iova =
 				sg_dma_address(msm_obj->domain[id].sgt->sgl);
 			}
-			DRM_DEBUG("iova=%p\n",
+			DRM_DEBUG("iova=%pK\n",
 					(void *)msm_obj->domain[id].iova);
 		} else {
 			WARN_ONCE(1, "physical address being used\n");
@@ -608,7 +599,7 @@ void msm_gem_describe(struct drm_gem_object *obj, struct seq_file *m)
 	uint64_t off = drm_vma_node_start(&obj->vma_node);
 
 	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
-	seq_printf(m, "%08x: %c(r=%u,w=%u) %2d (%2d) %08llx %p %zu\n",
+	seq_printf(m, "%08x: %c(r=%u,w=%u) %2d (%2d) %08llx %pK %zu\n",
 			msm_obj->flags, is_active(msm_obj) ? 'A' : 'I',
 			msm_obj->read_timestamp, msm_obj->write_timestamp,
 			obj->name, obj->refcount.refcount.counter,
@@ -668,10 +659,15 @@ void msm_gem_free_object(struct drm_gem_object *obj)
 			}
 			msm_obj->domain[id].iova = 0;
 		}
+
+		if (msm_obj->domain[id].sgt) {
+			sg_free_table(msm_obj->domain[id].sgt);
+			kfree(msm_obj->domain[id].sgt);
+			msm_obj->domain[id].sgt = NULL;
+		}
 	}
 
 	if (obj->import_attach) {
-		drm_prime_gem_destroy(obj, NULL);
 		if (msm_obj->vaddr)
 			dma_buf_vunmap(obj->import_attach->dmabuf,
 					msm_obj->vaddr);
@@ -683,6 +679,8 @@ void msm_gem_free_object(struct drm_gem_object *obj)
 			drm_free_large(msm_obj->pages);
 			msm_obj->pages = NULL;
 		}
+
+		drm_prime_gem_destroy(obj, msm_obj->import_sgt);
 	} else {
 		if (msm_obj->vaddr)
 			vunmap(msm_obj->vaddr);
@@ -848,6 +846,7 @@ struct drm_gem_object *msm_gem_import(struct drm_device *dev,
 	npages = size / PAGE_SIZE;
 
 	msm_obj = to_msm_bo(obj);
+	msm_obj->import_sgt = sgt;
 	msm_obj->pages = drm_malloc_ab(npages, sizeof(struct page *));
 	if (!msm_obj->pages) {
 		ret = -ENOMEM;

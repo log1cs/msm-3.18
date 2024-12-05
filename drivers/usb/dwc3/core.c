@@ -1,4 +1,3 @@
-/* 2017-06-30: File changed by Sony Corporation */
 /**
  * core.c - DesignWare USB3 DRD Controller Core file
  *
@@ -568,6 +567,17 @@ int dwc3_core_init(struct dwc3 *dwc)
 		dwc3_writel(dwc->regs, DWC3_GUSB3PIPECTL(0), reg);
 	}
 
+	/*
+	 * Enable evicting endpoint cache after flow control for bulk
+	 * endpoints for dwc3 core version 3.00a and 3.20a
+	 */
+	if (dwc->revision == DWC3_REVISION_300A ||
+			dwc->revision == DWC3_REVISION_320A) {
+		reg = dwc3_readl(dwc->regs, DWC3_GUCTL2);
+		reg |= DWC3_GUCTL2_ENABLE_EP_CACHE_EVICT;
+		dwc3_writel(dwc->regs, DWC3_GUCTL2, reg);
+	}
+
 	return 0;
 
 err2:
@@ -941,15 +951,6 @@ static int dwc3_probe(struct platform_device *pdev)
 	dev->dma_parms	= dev->parent->dma_parms;
 	dma_set_coherent_mask(dev, dev->parent->coherent_dma_mask);
 
-#ifdef CONFIG_RNDIS_USB_GADGET_ETHER
-	dwc->dwc_wq = alloc_ordered_workqueue("dwc_wq", WQ_HIGHPRI);
-	if (!dwc->dwc_wq) {
-		pr_err("%s: Unable to create workqueue dwc_wq\n", __func__);
-		return -ENOMEM;
-	}
-	INIT_WORK(&dwc->bh_work, dwc3_bh_work);
-#endif
-
 	pm_runtime_no_callbacks(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
@@ -1028,10 +1029,6 @@ static int dwc3_remove(struct platform_device *pdev)
 	phy_power_off(dwc->usb3_generic_phy);
 
 	dwc3_core_exit(dwc);
-
-#ifdef CONFIG_RNDIS_USB_GADGET_ETHER
-	destroy_workqueue(dwc->dwc_wq);
-#endif
 
 	pm_runtime_disable(&pdev->dev);
 

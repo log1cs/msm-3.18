@@ -1,4 +1,3 @@
-/* 2017-04-24: File changed by Sony Corporation */
 #include <linux/slab.h>
 #include <linux/file.h>
 #include <linux/fdtable.h>
@@ -29,7 +28,6 @@
 #include <linux/audit.h>
 #include <linux/tracehook.h>
 #include <linux/kmod.h>
-#include <linux/exception_monitor.h>
 #include <linux/fsnotify.h>
 #include <linux/fs_struct.h>
 #include <linux/pipe_fs_i.h>
@@ -532,9 +530,6 @@ void do_coredump(const siginfo_t *siginfo)
 		.mm_flags = mm->flags,
 	};
 
-	if (em_show_coredump(cprm.regs) == -1)
- 		printk(KERN_WARNING "Warning: em_show_coredump() failed.\n");
-
 	audit_core_dumps(siginfo->si_signo);
 
 	binfmt = mm->binfmt;
@@ -715,7 +710,7 @@ void do_coredump(const siginfo_t *siginfo)
 			goto close_fail;
 		if (!(cprm.file->f_mode & FMODE_CAN_WRITE))
 			goto close_fail;
-		if (do_truncate(cprm.file->f_path.dentry, 0, 0, cprm.file))
+		if (do_truncate2(cprm.file->f_path.mnt, cprm.file->f_path.dentry, 0, 0, cprm.file))
 			goto close_fail;
 	}
 

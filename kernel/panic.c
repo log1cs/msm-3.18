@@ -1,4 +1,3 @@
-/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  linux/kernel/panic.c
  *
@@ -25,20 +24,12 @@
 #include <linux/init.h>
 #include <linux/nmi.h>
 #include <linux/console.h>
-#include <linux/crash_notes.h>
-#ifdef CONFIG_EXCEPTION_MONITOR_ON_PANIC
-#include <linux/exception_monitor.h>
-int em_panic_from_die = 0;
-#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/exception.h>
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
-
-/* Machine specific panic information string */
-char *mach_panic_string;
 
 int panic_on_oops = CONFIG_PANIC_ON_OOPS_VALUE;
 static unsigned long tainted_mask;
@@ -133,9 +124,6 @@ void panic(const char *fmt, ...)
 	if (!crash_kexec_post_notifiers)
 		crash_kexec(NULL);
 
-	/* Store crash context for all other no panic cpus */
-	crash_notes_save_cpus();
-
 	/*
 	 * Note smp_send_stop is the usual smp shutdown function, which
 	 * unfortunately means it may not be hardened to work in a panic
@@ -159,11 +147,6 @@ void panic(const char *fmt, ...)
 	 * more unstable, it can increase risks of the kdump failure too.
 	 */
 	crash_kexec(NULL);
-
-#ifdef CONFIG_EXCEPTION_MONITOR_ON_PANIC
-	if (!em_panic_from_die)
-		em_show_here();
-#endif
 
 	bust_spinlocks(0);
 
@@ -432,11 +415,6 @@ late_initcall(init_oops_id);
 void print_oops_end_marker(void)
 {
 	init_oops_id();
-
-	if (mach_panic_string)
-		printk(KERN_WARNING "Board Information: %s\n",
-		       mach_panic_string);
-
 	pr_warn("---[ end trace %016llx ]---\n", (unsigned long long)oops_id);
 }
 

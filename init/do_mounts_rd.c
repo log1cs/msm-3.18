@@ -1,4 +1,3 @@
-/* 2017-05-08: File changed by Sony Corporation */
 /*
  * Many of the syscalls used in this file expect some of the arguments
  * to be __user pointers not __kernel pointers.  To limit the sparse
@@ -18,8 +17,6 @@
 #include <linux/initrd.h>
 #include <linux/string.h>
 #include <linux/slab.h>
-#include <linux/snsc_boot_time.h>
-
 
 #include "do_mounts.h"
 #include "../fs/squashfs/squashfs_fs.h"
@@ -198,7 +195,6 @@ int __init rd_load_image(char *from)
 	char rotator[4] = { '|' , '/' , '-' , '\\' };
 #endif
 
-	BOOT_TIME_ADD1("rd_load_image start");
 	out_fd = sys_open("/dev/ram", O_RDWR, 0);
 	if (out_fd < 0)
 		goto out;
@@ -299,7 +295,6 @@ noclose_input:
 out:
 	kfree(buf);
 	sys_unlink("/dev/ram");
-	BOOT_TIME_ADD1("rd_load_image end");
 	return res;
 }
 
@@ -350,7 +345,6 @@ static void __init error(char *x)
 static int __init crd_load(int in_fd, int out_fd, decompress_fn deco)
 {
 	int result;
-	BOOT_TIME_ADD1("crd_load start");
 	crd_infd = in_fd;
 	crd_outfd = out_fd;
 
@@ -363,6 +357,5 @@ static int __init crd_load(int in_fd, int out_fd, decompress_fn deco)
 	result = deco(NULL, 0, compr_fill, compr_flush, NULL, NULL, error);
 	if (decompress_error)
 		result = 1;
-	BOOT_TIME_ADD1("crd_load end");
 	return result;
 }

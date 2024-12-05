@@ -1,4 +1,3 @@
-/* 2017-03-09: File changed by Sony Corporation */
 /*
    BlueZ - Bluetooth protocol stack for Linux
    Copyright (C) 2000-2001 Qualcomm Incorporated

@@ -25,15 +25,6 @@ config RTC_HCTOSYS
 	  the value read from a specified RTC device. This is useful to avoid
 	  unnecessary fsck runs at boot time, and to network better.
 
-config SNSC_BUILTIN_TIMESTAMP
-	bool "SNSC built-in timestamp to set the time"
-	default n
-	help
-	  This feature helps to set the date and time based on kernel
-	  builtin timestamp as initial system time. It is useful in
-	  cases, when no RTC driver are available for the system and
-	  when the RTC time is invalid or not updated time.
-
 config RTC_SYSTOHC
 	bool "Set the RTC time based on NTP synchronization"
 	default y
@@ -1445,17 +1436,5 @@ config RTC_DRV_HID_SENSOR_TIME
 	  If this driver is compiled as a module, it will be named
 	  rtc-hid-sensor-time.
 
-config AL0_RTC_SYSTOHC
-	bool "On AL0, Set the RTC time based on Built-in timestamp"
-	depends on RTC_SYSTOHC && SNSC_BUILTIN_TIMESTAMP
-	help
-	  If you say yes here, the kernel builtin timestamp will be stored
-	  in the RTC specified by RTC_HCTOSYS_DEVICE during the bootup.
-
-config AL0_RTC_HCTOSYS
-	bool "On AL0, Update system clock from RTC during resume"
-	depends on RTC_HCTOSYS
-	help
-	  Say yes here to set the system clock from RTC during the resume.
 
 endif # RTC_CLASS

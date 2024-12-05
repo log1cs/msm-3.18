@@ -61,6 +61,8 @@ config FILE_LOCKING
           for filesystems like NFS and for the flock() system
           call. Disabling this option saves about 11k.
 
+source "fs/crypto/Kconfig"
+
 source "fs/notify/Kconfig"
 
 source "fs/quota/Kconfig"
@@ -275,13 +277,5 @@ config FILE_TABLE_DEBUG
 	bool "Enable FILE_TABLE_DEBUG"
 	help
 	  This option enables debug of the open files using a global filetable
-
-if BLOCK
-menu "SNSC Configurations"
-
-source "fs/Kconfig.snsc"
-
-endmenu
-endif
 
 endmenu

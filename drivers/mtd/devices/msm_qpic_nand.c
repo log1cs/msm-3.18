@@ -855,6 +855,7 @@ static int msm_nand_flash_onfi_probe(struct msm_nand_info *info)
 					flash->pagesize;
 	flash->oobsize  = onfi_param_page_ptr->number_of_spare_bytes_per_page;
 	flash->density  = onfi_param_page_ptr->number_of_blocks_per_logical_unit
+				* onfi_param_page_ptr->number_of_logical_units
 					* flash->blksize;
 	flash->ecc_correctability = onfi_param_page_ptr->
 					number_of_bits_ecc_correctability;
@@ -1056,7 +1057,10 @@ static void msm_nand_update_rw_reg_data(struct msm_nand_chip *chip,
 			data->ecc_bch_cfg = chip->ecc_bch_cfg;
 		} else {
 			data->cmd = MSM_NAND_CMD_PAGE_READ_ALL;
-			data->cfg0 = chip->cfg0_raw;
+			data->cfg0 =
+			(chip->cfg0_raw & ~(7U << CW_PER_PAGE)) |
+			(((args->cwperpage-1) - args->start_sector)
+			 << CW_PER_PAGE);
 			data->cfg1 = chip->cfg1_raw;
 			data->ecc_bch_cfg = chip->ecc_cfg_raw;
 		}
@@ -3345,6 +3349,9 @@ static int msm_nand_parse_smem_ptable(int *nr_parts)
 }
 #endif
 
+#define BOOT_DEV_MASK 0x1E
+#define BOOT_DEV_NAND 0x4
+
 /*
  * This function gets called when its device named msm-nand is added to
  * device tree .dts file with all its resources such as physical addresses
@@ -3362,6 +3369,26 @@ static int msm_nand_probe(struct platform_device *pdev)
 	int i, err, nr_parts;
 	struct device *dev;
 	u32 adjustment_offset;
+	void __iomem *boot_cfg_base;
+	u32 boot_dev;
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						"boot_cfg");
+	if (res && res->start) {
+		boot_cfg_base = devm_ioremap(&pdev->dev, res->start,
+						resource_size(res));
+		if (!boot_cfg_base) {
+			pr_err("ioremap() failed for addr 0x%x size 0x%x\n",
+				res->start, resource_size(res));
+			return -ENOMEM;
+		}
+		boot_dev = (readl_relaxed(boot_cfg_base) & BOOT_DEV_MASK) >> 1;
+		if (boot_dev != BOOT_DEV_NAND) {
+			pr_err("disabling nand as boot device (%x) is not NAND\n",
+					boot_dev);
+			return -ENODEV;
+		}
+	}
 	/*
 	 * The partition information can also be passed from kernel command
 	 * line. Also, the MTD core layer supports adding the whole device as

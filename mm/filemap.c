@@ -1,4 +1,3 @@
-/* 2017-06-21: File changed by Sony Corporation */
 /*
  *	linux/mm/filemap.c
  *
@@ -788,9 +787,6 @@ void page_endio(struct page *page, int rw, int err)
 {
 	if (rw == READ) {
 		if (!err) {
-#ifdef CONFIG_SNSC_FS_FLUSH_DCACHE_IN_VFS
-                        flush_dcache_page(page);
-#endif
 			SetPageUptodate(page);
 		} else {
 			ClearPageUptodate(page);
@@ -2069,7 +2065,7 @@ int filemap_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 	int ret = VM_FAULT_LOCKED;
 
 	sb_start_pagefault(inode->i_sb);
-	vma_file_update_time(vma);
+	file_update_time(vma->vm_file);
 	lock_page(page);
 	if (page->mapping != inode->i_mapping) {
 		unlock_page(page);

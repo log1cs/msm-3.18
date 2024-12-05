@@ -1,4 +1,3 @@
-/* 2017-11-13: File changed by Sony Corporation */
 /*
  *  linux/arch/arm/kernel/smp_twd.c
  *
@@ -26,10 +25,6 @@
 
 #include <asm/smp_plat.h>
 #include <asm/smp_twd.h>
-
-#ifdef CONFIG_SNSC_LCTRACER
-#include <linux/snsc_lctracer.h>
-#endif
 
 /* set up by the platform code */
 static void __iomem *twd_base;
@@ -236,37 +231,12 @@ static void twd_calibrate_rate(void)
 static irqreturn_t twd_handler(int irq, void *dev_id)
 {
 	struct clock_event_device *evt = dev_id;
-#ifdef CONFIG_SNSC_LCTRACER
-		u64 t1 = 0;
-		u64 t2 = 0;
-		u32 delta = 0;
-
-		if (snsc_lctracer_is_running())
-			t1 = sched_clock();
-#endif
 
 	if (twd_timer_ack()) {
 		evt->event_handler(evt);
-#ifdef CONFIG_SNSC_LCTRACER
-		if (snsc_lctracer_is_running()) {
-			t2 = sched_clock();
-			delta = t2 - t1;
-			delta /= 1000;
-			snsc_lctracer_add_trace_entry(current, current,
-					SNSC_LCTRACER_LOC_IRQ | (delta << 16));
-		}
-#endif
 		return IRQ_HANDLED;
 	}
-#ifdef CONFIG_SNSC_LCTRACER
-		if (snsc_lctracer_is_running()) {
-			t2 = sched_clock();
-			delta = t2 - t1;
-			delta /= 1000;
-			snsc_lctracer_add_trace_entry(current, current,
-					SNSC_LCTRACER_LOC_IRQ | (delta << 16));
-		}
-#endif
+
 	return IRQ_NONE;
 }
 

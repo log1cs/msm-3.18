@@ -1,8 +1,6 @@
-/* 2017-04-24: File changed by Sony Corporation */
 /*
  * arch/arm/kernel/unwind.c
  *
- * Copyright (C) 2011 Sony corp.
  * Copyright (C) 2008 ARM Limited
  *
  * This program is free software; you can redistribute it and/or modify
@@ -39,7 +37,6 @@
 #endif
 #endif /* __CHECKER__ */
 
-/* #define DEBUG */
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/export.h>
@@ -51,7 +48,6 @@
 #include <asm/stacktrace.h>
 #include <asm/traps.h>
 #include <asm/unwind.h>
-#include <asm/unwind_internal.h>
 
 /* Dummy functions to avoid linker complaints */
 void __aeabi_unwind_cpp_pr0(void)
@@ -68,6 +64,19 @@ void __aeabi_unwind_cpp_pr2(void)
 {
 };
 EXPORT_SYMBOL(__aeabi_unwind_cpp_pr2);
+
+struct unwind_ctrl_block {
+	unsigned long vrs[16];		/* virtual register set */
+	const unsigned long *insn;	/* pointer to the current instructions word */
+	unsigned long sp_high;		/* highest value of sp allowed */
+	/*
+	 * 1 : check for stack overflow for each register pop.
+	 * 0 : save overhead if there is plenty of stack remaining.
+	 */
+	int check_each_pop;
+	int entries;			/* number of entries left to interpret */
+	int byte;			/* current byte number in the instructions word */
+};
 
 enum regs {
 #ifdef CONFIG_THUMB2_KERNEL
@@ -88,21 +97,12 @@ static DEFINE_SPINLOCK(unwind_lock);
 static LIST_HEAD(unwind_tables);
 
 /* Convert a prel31 symbol to an absolute address */
-#ifdef CONFIG_ARM_UNWIND_USER
-#define prel31_to_addr(ptr)					\
-({								\
-	/* sign-extend to 32 bits */				\
-	long offset = (((long)bt_get_user32(ptr)) << 1) >> 1;	\
-	(unsigned long)(ptr) + offset;				\
-})
-#else
 #define prel31_to_addr(ptr)				\
 ({							\
 	/* sign-extend to 32 bits */			\
 	long offset = (((long)*(ptr)) << 1) >> 1;	\
 	(unsigned long)(ptr) + offset;			\
 })
-#endif
 
 /*
  * Binary search in the unwind index. The entries are
@@ -285,8 +285,8 @@ static int unwind_exec_pop_r4_to_rN(struct unwind_ctrl_block *ctrl,
 		if (unwind_pop_register(ctrl, &vsp, reg))
 				return -URC_FAILURE;
 
-	if (insn & 0x8) /* pop R4-R[4+bbb] + R14 if b000 */
-		if (unwind_pop_register(ctrl, &vsp, LR))
+	if (insn & 0x8)
+		if (unwind_pop_register(ctrl, &vsp, 14))
 				return -URC_FAILURE;
 
 	ctrl->vrs[SP] = (unsigned long)vsp;
@@ -311,22 +311,6 @@ static int unwind_exec_pop_subset_r0_to_r3(struct unwind_ctrl_block *ctrl,
 	ctrl->vrs[SP] = (unsigned long)vsp;
 
 	return URC_OK;
-}
-
-typedef unsigned long (*unwind_get_byte_func_t )(struct unwind_ctrl_block *);
-static unsigned int unwind_conv_uleb128(unwind_get_byte_func_t get_b, struct unwind_ctrl_block *ctrl)
-{
-    unsigned int result = 0;
-    unsigned int shift = 0;
-    int count=5; /* theoretical max */
-    while(count--) {
-        unsigned char byte = get_b(ctrl);
-        result |= ((byte & 0x7f) << shift);
-        if ((byte & 0x80) == 0)
-            break;
-        shift += 7;
-    }
-    return result;
 }
 
 /*
@@ -382,7 +366,7 @@ static int unwind_exec_insn(struct unwind_ctrl_block *ctrl)
 		if (ret)
 			goto error;
 	} else if (insn == 0xb2) {
-		unsigned long uleb128 = unwind_conv_uleb128(unwind_get_byte, ctrl);
+		unsigned long uleb128 = unwind_get_byte(ctrl);
 
 		ctrl->vrs[SP] += 0x204 + (uleb128 << 2);
 	} else {
@@ -397,258 +381,6 @@ error:
 	return ret;
 }
 
-
-#ifdef CONFIG_ARM_UNWIND_MANUAL
-extern const unsigned long kallsyms_addresses[] __attribute__((weak));
-extern const unsigned long kallsyms_num_syms __attribute__((weak, section(".rodata")));
-
-#define INSTR_OFFSET 0x0e000000
-#define INSTR_SHIFT 25
-
-#define OPCODE_OFFSET 0x01e00000
-#define OPCODE_SHIFT 21
-
-#define SUB_CMD 0x0010
-#define ADD_CMD 0x0100
-
-/* Data processing instruction offsets and constants */
-#define DP_DEST_REG_OFFSET 0x0000f000
-#define DP_DEST_REG_SP_CONST 0x0000d000
-#define DP_SRC_REG_OFFSET 0x000f0000
-#define DP_SRC_REG_SP_CONST 0x000d0000
-#define DP_SRC_REG_FP_CONST 0x000b0000
-
-/*Data processing shifter operand*/
-#define DP_SHIFT_OPERAND 0x00000fff
-
-/* Load Store instruction offset and constants */
-#define LDST_CONST 0x00100000
-#define LDST_DEST_REG_OFFSET 0x000f0000
-#define LDST_DEST_SP_CONST 0x000d0000
-#define LDST_PBIT_CONST 0x01000000
-#define LDST_WBIT_CONST 0x00200000
-#define LDST_UBIT_CONST 0x00800000
-
-
-/* Load/Store immediate offset instr, destination register offset*/
-#define LDST_IM_DEST_OFFSET 0x0000f000
-
-/* Load/Store immediate offset instr, destination register is LR*/
-#define LDST_IM_DEST_LR_CONST 0x0000e000
-#define LDST_IM_SHIFT_OPERAND 0x00000fff
-
-/* Load/Store Multiple shifter operand */
-#define LDST_ML_SHIFT_OPERAND 0x0000ffff
-
-/*
-* Decode the data processing instructions with immediate shift.
-* If data processing operation involves stack pointer.
-*/
-
-int decode_1(unsigned long instruction, struct unwind_ctrl_block *ctrl)
-{
-	unsigned long  offset, opcode, source_reg;
-
-	opcode = (instruction & OPCODE_OFFSET) >> OPCODE_SHIFT;
-	switch (opcode) {
-		case SUB_CMD: /* SUB command */
-		case ADD_CMD: /* ADD command */
-			if ((instruction & DP_DEST_REG_OFFSET) == DP_DEST_REG_SP_CONST) { /* stack is updated */
-				if ((instruction & DP_SRC_REG_OFFSET) == DP_SRC_REG_SP_CONST) /* source register is sp */
-					source_reg = ctrl->vrs[SP];
-				else if ((instruction & DP_SRC_REG_OFFSET) == DP_SRC_REG_FP_CONST) /* source register is fp */
-					source_reg = ctrl->vrs[FP];
-				else
-					return -URC_FAILURE;
-
-				offset = instruction & DP_SHIFT_OPERAND;
-				if (opcode == SUB_CMD)
-					ctrl->vrs[SP] = source_reg + offset;
-				else
-					ctrl->vrs[SP] = source_reg - offset;
-			}
-		break;
-	}
-	return URC_OK;
-}
-
-/*
-* Check if stack value matches with LR register.
-*/
-int check_lr(unsigned long addr, struct unwind_ctrl_block *ctrl)
-{
-	unsigned int ret = URC_OK;
-	unsigned long insn;
-	if(access_ok(VERIFY_READ, addr, sizeof(insn)) && (! __get_user(insn, (unsigned long *)addr)))
-		if (ctrl->vrs[LR] == insn)
-			ret = 1;
-	return ret;
-}
-
-/*
-* Decode the Load/Store operation.
-* If operation involves stack pointer.
-*/
-int decode_2(unsigned long instruction, struct unwind_ctrl_block *ctrl)
-{
-	unsigned long offset;
-	unsigned long addr;
-	unsigned int ret = URC_OK;
-
-	/* LR stored in STR operation, store LR for next unwind */
-	if ((instruction & LDST_IM_DEST_OFFSET) == LDST_IM_DEST_LR_CONST)
-		ctrl->vrs[PC] = ctrl->vrs[LR];
-
-	offset = instruction & LDST_IM_SHIFT_OPERAND;
-	/* check if U bit to decide stack increment/decrement */
-	if (instruction & LDST_UBIT_CONST) {
-		addr = ctrl->vrs[SP] -= offset;
-		addr += 4;
-	}
-	else {
-		addr = ctrl->vrs[SP] += offset;
-		addr -= 4;
-	}
-	ret = check_lr(addr, ctrl);
-	return ret;
-}
-
-/*
-* Decode the Load/Store Multiple operation.
-* If operation involves stack pointer.
-*/
-int decode_4(unsigned long instruction, struct unwind_ctrl_block *ctrl)
-{
-	unsigned int i, ret = URC_OK;
-	unsigned long offset, shift;
-	unsigned long addr = ctrl->vrs[SP];
-
-	offset = instruction & LDST_ML_SHIFT_OPERAND;
-	for (i=0; i<16; i++) {
-		shift = 1 << i;
-		if (offset & shift) {
-			if (i == 14)
-				ctrl->vrs[PC] = ctrl->vrs[LR];
-
-			/* check if U bit to decide stack increment/decrement */
-			if (instruction & LDST_UBIT_CONST)
-				addr = ctrl->vrs[SP] -= 4;
-			else
-				addr = ctrl->vrs[SP] += 4;
-		}
-	}
-	if (instruction & LDST_UBIT_CONST)
-		addr += 4;
-	else
-		addr -= 4;
-
-	ret = check_lr(addr, ctrl);
-	return ret;
-}
-
-int decode_2_4(unsigned int cmd, unsigned long instruction, struct unwind_ctrl_block *ctrl)
-{
-	unsigned int ret = URC_OK;
-	if(!(instruction & LDST_CONST)) /* find if load=1/store=0 instuction */
-		if((instruction & LDST_DEST_REG_OFFSET) == LDST_DEST_SP_CONST)  /* PUSH operation */
-			if((instruction & LDST_PBIT_CONST) && (instruction & LDST_WBIT_CONST)) { /* P and W bit are set, update sp */
-				if (cmd == 2)
-					ret = decode_2(instruction, ctrl);
-				else
-					ret = decode_4(instruction, ctrl);
-			}
-	return ret;
-}
-
-int unwind_instr(struct unwind_ctrl_block *ctrl, unsigned long addr)
-{
-	unsigned int cmd;
-	int ret = URC_OK;
-	unsigned long instruction;
-
-	if(!access_ok(VERIFY_READ, addr, sizeof(instruction)) || __get_user(instruction, (unsigned long *)addr))
-		return ret;
-
-	cmd = (instruction & INSTR_OFFSET) >> INSTR_SHIFT;
-	printk("addr:%lx  instr:%lx  cmd=%x sp:%lx, lr:%lx, pc:%lx \n", addr, instruction, cmd, ctrl->vrs[SP], ctrl->vrs[LR], ctrl->vrs[PC]);
-
-	switch (cmd) {
-		case 1: /* data processing immediate shift[2] */
-			ret = decode_1(instruction, ctrl);
-		break;
-
-		case 2: /* Load/Store immediate offset */
-		case 4: /* Load/Store multiple */
-			ret = decode_2_4(cmd, instruction, ctrl);
-		break;
-	}
-	return ret;
-}
-
-/*
-* Manually unwind the stack frames.
-* For assembly function which do not follow/add unwind assembly directives.
-*/
-int manual_unwind_frame(struct stackframe *frame, struct unwind_ctrl_block *ctrl)
-{
-	unsigned long symbol_start = 0;
-	unsigned long low, high, mid;
-	unsigned long addr = frame->pc;
-	int ret ;
-
-	ctrl->vrs[PC] = frame->pc;
-	low = 0;
-	high = kallsyms_num_syms;
-
-	/* get the function top address for pc */
-	while (high - low > 1) {
-		mid = low + (high - low) / 2;
-		if (kallsyms_addresses[mid] <= addr)
-			low = mid;
-		else
-			high = mid;
-	}
-
-	while (low && kallsyms_addresses[low-1] == kallsyms_addresses[low])
-		--low;
-
-	symbol_start = kallsyms_addresses[low];
-
-	/* read the instructions using pc and function top address */
-	while (addr>=symbol_start) {
-		ret = unwind_instr(ctrl, symbol_start);
-		if (ret < 0)
-			return -URC_FAILURE;
-		if (ret > URC_OK)
-			break;
-		symbol_start+=4;
-
-	}
-
-	if (!(ctrl->vrs[PC] == frame->pc)) {
-		frame->fp = ctrl->vrs[FP];
-		frame->sp = ctrl->vrs[SP];
-		frame->lr = ctrl->vrs[LR];
-
-		/* Condition when no stack is updated */
-		if(ctrl->vrs[PC] == 0)
-			ctrl->vrs[PC] = ctrl->vrs[LR];
-
-		/* Condition for inifinite loop */
-		if(ctrl->vrs[PC] == frame->pc)
-			return -URC_FAILURE;
-		frame->pc = ctrl->vrs[PC];
-		return URC_OK;
-	}
-	return -URC_FAILURE;
-}
-#else
-int manual_unwind_frame(struct stackframe *frame, struct unwind_ctrl_block *ctrl)
-{
-	return -URC_FAILURE;
-}
-#endif
-
 /*
  * Unwind a single frame starting with *sp for the symbol at *pc. It
  * updates the *pc and *sp with the new values.
@@ -658,7 +390,6 @@ int unwind_frame(struct stackframe *frame)
 	unsigned long low;
 	const struct unwind_idx *idx;
 	struct unwind_ctrl_block ctrl;
-	static int first_time = 1;
 
 	/* store the highest address on the stack to avoid crossing it*/
 	low = frame->sp;
@@ -681,15 +412,9 @@ int unwind_frame(struct stackframe *frame)
 	ctrl.vrs[LR] = frame->lr;
 	ctrl.vrs[PC] = 0;
 
-	if (idx->insn == 1) {
-		/* limiting manual unwinding for topmost stack-frame only */
-		if (first_time){
-			first_time = 0;
-			return manual_unwind_frame(frame, &ctrl);
-		}
-		else
-			return -URC_FAILURE;
-	}
+	if (idx->insn == 1)
+		/* can't unwind */
+		return -URC_FAILURE;
 	else if ((idx->insn & 0x80000000) == 0)
 		/* prel31 to the unwind table */
 		ctrl.insn = (unsigned long *)prel31_to_addr(&idx->insn);
@@ -699,11 +424,8 @@ int unwind_frame(struct stackframe *frame)
 	else {
 		pr_warn("unwind: Unsupported personality routine %08lx in the index at %p\n",
 			idx->insn, idx);
-		first_time = 0;
 		return -URC_FAILURE;
 	}
-
-	first_time = 0;
 
 	/* check the personality routine */
 	if ((*ctrl.insn & 0xff000000) == 0x80000000) {
@@ -828,10 +550,3 @@ void unwind_table_del(struct unwind_table *tab)
 
 	kfree(tab);
 }
-
-
-#ifdef CONFIG_ARM_UNWIND_USER
-#include "unwind_user.c"
-#endif
-
-

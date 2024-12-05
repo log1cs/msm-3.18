@@ -1,4 +1,3 @@
-/* 2017-05-25: File changed by Sony Corporation */
 /*
  *  linux/init/main.c
  *
@@ -108,7 +107,6 @@ bool early_boot_irqs_disabled __read_mostly;
 enum system_states system_state __read_mostly;
 EXPORT_SYMBOL(system_state);
 
-#include <linux/snsc_boot_time.h>
 /*
  * Boot command-line arguments
  */
@@ -494,7 +492,6 @@ static void __init mm_init(void)
 	 * page_cgroup requires contiguous pages,
 	 * bigger than MAX_ORDER unless SPARSEMEM.
 	 */
-	BOOT_TIME_ADD1("mem_init()");
 	page_cgroup_init_flatmem();
 	mem_init();
 	kmem_cache_init();
@@ -561,7 +558,6 @@ asmlinkage __visible void __init start_kernel(void)
 	 */
 	setup_log_buf(0);
 	pidhash_init();
-	BOOT_TIME_ADD1("vfs_caches_init_early()");
 	vfs_caches_init_early();
 	sort_main_extable();
 	trap_init();
@@ -598,11 +594,9 @@ asmlinkage __visible void __init start_kernel(void)
 	hrtimers_init();
 	softirq_init();
 	timekeeping_init();
-	BOOT_TIME_ADD1("time_init()");
 	time_init();
 	sched_clock_postinit();
 	perf_event_init();
-	BOOT_TIME_ADD1("profile_init()");
 	profile_init();
 	call_function_init();
 	WARN(!irqs_disabled(), "Interrupts were enabled early\n");
@@ -616,7 +610,6 @@ asmlinkage __visible void __init start_kernel(void)
 	 * we've done PCI setups etc, and console_init() must be aware of
 	 * this. But we do want output early, in case something goes wrong.
 	 */
-        BOOT_TIME_ADD1("console_init()");
 	console_init();
 	if (panic_later)
 		panic("Too many boot %s vars at `%s'", panic_later,
@@ -662,7 +655,6 @@ asmlinkage __visible void __init start_kernel(void)
 #endif
 	thread_info_cache_init();
 	cred_init();
-	BOOT_TIME_ADD1("fork_init()");
 	fork_init(totalram_pages);
 	proc_caches_init();
 	buffer_init();
@@ -692,7 +684,6 @@ asmlinkage __visible void __init start_kernel(void)
 	ftrace_init();
 
 	/* Do the rest non-__init'ed, we're now alive */
-        BOOT_TIME_ADD1("rest_init()");
 	rest_init();
 }
 
@@ -876,10 +867,8 @@ static void __init do_initcalls(void)
 {
 	int level;
 
-	BOOT_TIME_ADD();
 	for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)
 		do_initcall_level(level);
-	BOOT_TIME_ADD1("do_initcalls() end\n");
 }
 
 /*
@@ -974,10 +963,7 @@ static int __ref kernel_init(void *unused)
 	kernel_init_freeable();
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
-#ifndef CONFIG_SNSC_DEFERRED_INITCALLS
-	BOOT_TIME_ADD1("free_initmem()");
 	free_initmem();
-#endif
 	mark_readonly();
 	system_state = SYSTEM_RUNNING;
 	numa_default_policy();
@@ -985,7 +971,6 @@ static int __ref kernel_init(void *unused)
 	flush_delayed_fput();
 
 	if (ramdisk_execute_command) {
-		BOOT_TIME_ADD1("run_init_process()");
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
 			return 0;
@@ -1000,14 +985,12 @@ static int __ref kernel_init(void *unused)
 	 * trying to recover a really broken machine.
 	 */
 	if (execute_command) {
-		BOOT_TIME_ADD1("run_init_process()");
 		ret = run_init_process(execute_command);
 		if (!ret)
 			return 0;
 		pr_err("Failed to execute %s (error %d).  Attempting defaults...\n",
 			execute_command, ret);
 	}
-	BOOT_TIME_ADD1("try_to_run_init_process()");
 	if (!try_to_run_init_process("/sbin/init") ||
 	    !try_to_run_init_process("/etc/init") ||
 	    !try_to_run_init_process("/bin/init") ||
@@ -1023,7 +1006,6 @@ static noinline void __init kernel_init_freeable(void)
 	/*
 	 * Wait until kthreadd is all set-up.
 	 */
-	BOOT_TIME_ADD1("kernel_init_freeable()");
 	wait_for_completion(&kthreadd_done);
 
 	/* Now the scheduler is fully set up and can do blocking allocations */
@@ -1048,7 +1030,6 @@ static noinline void __init kernel_init_freeable(void)
 	smp_init();
 	sched_init_smp();
 
-	BOOT_TIME_ADD1("do_basic_setup()");
 	do_basic_setup();
 
 	/* Open the /dev/console on the rootfs, this should never fail */
@@ -1065,10 +1046,8 @@ static noinline void __init kernel_init_freeable(void)
 	if (!ramdisk_execute_command)
 		ramdisk_execute_command = "/init";
 
-        BOOT_TIME_ADD1("sys_access(\"/init\")");
 	if (sys_access((const char __user *) ramdisk_execute_command, 0) != 0) {
 		ramdisk_execute_command = NULL;
-		BOOT_TIME_ADD1("prepare_namespace()");
 		prepare_namespace();
 	}
 

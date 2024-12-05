@@ -1568,8 +1568,10 @@ static int __cpufreq_remove_dev_finish(struct device *dev,
 		list_del(&policy->policy_list);
 		write_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
-		if (!cpufreq_suspended)
+		if (!cpufreq_suspended) {
+			flush_work(&policy->update);
 			cpufreq_policy_free(policy);
+		}
 	} else if (has_target()) {
 		ret = __cpufreq_governor(policy, CPUFREQ_GOV_START);
 		if (!ret)
@@ -1761,8 +1763,8 @@ int cpufreq_generic_suspend(struct cpufreq_policy *policy)
 	int ret;
 
 	if (!policy->suspend_freq) {
-		pr_debug("%s: suspend_freq not defined\n", __func__);
-		return 0;
+		pr_err("%s: suspend_freq can't be zero\n", __func__);
+		return -EINVAL;
 	}
 
 	pr_debug("%s: Setting suspend-freq: %u\n", __func__,
@@ -2577,20 +2579,6 @@ EXPORT_SYMBOL_GPL(cpufreq_boost_enabled);
  *               REGISTER / UNREGISTER CPUFREQ DRIVER                *
  *********************************************************************/
 
-static char cpufreq_driver_name[CPUFREQ_NAME_LEN];
-
-static int __init cpufreq_driver_setup(char *str)
-{
-	strlcpy(cpufreq_driver_name, str, CPUFREQ_NAME_LEN);
-	return 1;
-}
-
-/*
- * Set this name to only allow one specific cpu freq driver, e.g.,
- * cpufreq_driver=powernow-k8
- */
-__setup("cpufreq_driver=", cpufreq_driver_setup);
-
 /**
  * cpufreq_register_driver - register a CPU Frequency driver
  * @driver_data: A struct cpufreq_driver containing the values#
@@ -2617,13 +2605,7 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 	     (!!driver_data->get_intermediate != !!driver_data->target_intermediate))
 		return -EINVAL;
 
-	pr_debug("trying to register driver %s, cpufreq_driver=%s\n",
-		driver_data->name, cpufreq_driver_name);
-
-	if (cpufreq_driver_name[0])
-		if (!driver_data->name ||
-			strcmp(cpufreq_driver_name, driver_data->name))
-				return -EINVAL;
+	pr_debug("trying to register driver %s\n", driver_data->name);
 
 	if (driver_data->setpolicy)
 		driver_data->flags |= CPUFREQ_CONST_LOOPS;

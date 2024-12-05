@@ -1,4 +1,3 @@
-/* 2017-04-24: File changed by Sony Corporation */
 /*
  * Driver for OMAP-UART controller.
  * Based on drivers/serial/8250.c
@@ -1260,37 +1259,6 @@ static void serial_omap_console_putchar(struct uart_port *port, int ch)
 	serial_out(up, UART_TX, ch);
 }
 
-#ifdef CONFIG_CONSOLE_READ
-static int serial_omap_console_read(struct console *co, char *buffer,
-                unsigned int count)
-{
-	struct uart_omap_port *up = serial_omap_console_ports[co->index];
-	unsigned int ier;
-        int i;
-
-	/*
-         *      First save the IER then disable the interrupts
-         */
-	ier = serial_in(up, UART_IER);
-        serial_out(up, UART_IER, 0);
-
-        /* Now, do each character read */
-	for(i = 0; i < count; i++){
-                while ((serial_in(up, UART_LSR) & UART_LSR_DR) == 0) {
-                        udelay(1);
-                }
-                *buffer++ = serial_in(up, UART_RX);
-        }
-
-        /*
-         *      restore the IER
-         */
-        serial_out(up, UART_IER, ier);
-
-        return i;
-}
-#endif
-
 static void
 serial_omap_console_write(struct console *co, const char *s,
 		unsigned int count)
@@ -1299,6 +1267,7 @@ serial_omap_console_write(struct console *co, const char *s,
 	unsigned long flags;
 	unsigned int ier;
 	int locked = 1;
+
 	pm_runtime_get_sync(up->dev);
 
 	local_irq_save(flags);
@@ -1362,9 +1331,6 @@ serial_omap_console_setup(struct console *co, char *options)
 static struct console serial_omap_console = {
 	.name		= OMAP_SERIAL_NAME,
 	.write		= serial_omap_console_write,
-#ifdef CONFIG_CONSOLE_READ
-	.read		= serial_omap_console_read,
-#endif
 	.device		= uart_console_device,
 	.setup		= serial_omap_console_setup,
 	.flags		= CON_PRINTBUFFER,

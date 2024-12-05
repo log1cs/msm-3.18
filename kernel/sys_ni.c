@@ -202,7 +202,6 @@ cond_syscall(compat_sys_timerfd_gettime);
 cond_syscall(sys_eventfd);
 cond_syscall(sys_eventfd2);
 cond_syscall(sys_memfd_create);
-cond_syscall(sys_userfaultfd);
 
 /* performance counters: */
 cond_syscall(sys_perf_event_open);
@@ -225,9 +224,3 @@ cond_syscall(sys_seccomp);
 
 /* access BPF programs and maps */
 cond_syscall(sys_bpf);
-
-/* execveat */
-cond_syscall(sys_execveat);
-
-/* membarrier */
-cond_syscall(sys_membarrier);

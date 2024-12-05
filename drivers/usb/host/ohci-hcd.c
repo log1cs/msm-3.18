@@ -1,4 +1,3 @@
-/* 2017-05-25: File changed by Sony Corporation */
 /*
  * Open Host Controller Interface (OHCI) driver for USB.
  *
@@ -73,7 +72,7 @@
 static const char	hcd_name [] = "ohci_hcd";
 
 #define	STATECHANGE_DELAY	msecs_to_jiffies(300)
-#define	IO_WATCHDOG_DELAY	msecs_to_jiffies(275)
+#define	IO_WATCHDOG_DELAY	msecs_to_jiffies(250)
 
 #include "ohci.h"
 #include "pci-quirks.h"
@@ -1358,12 +1357,7 @@ static int __init ohci_hcd_mod_init(void)
 	clear_bit(USB_OHCI_LOADED, &usb_hcds_loaded);
 	return retval;
 }
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS_USB
-deferred_initcall(ohci_hcd_mod_init,
-		  CONFIG_SNSC_DEFERRED_INITCALLS_GROUP_USB_HCD);
-#else
 module_init(ohci_hcd_mod_init);
-#endif
 
 static void __exit ohci_hcd_mod_exit(void)
 {

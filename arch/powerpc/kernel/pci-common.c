@@ -211,7 +211,6 @@ struct pci_controller* pci_find_hose_for_OF_device(struct device_node* node)
 	}
 	return NULL;
 }
-EXPORT_SYMBOL(pci_find_hose_for_OF_device);
 
 /*
  * Reads the interrupt pin to determine if interrupt is use by card.
@@ -1449,15 +1448,9 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 	return pci_enable_resources(dev, mask);
 }
 
-/* Before assuming too much here, take care to realize that we need sign
- * extension from 32-bit pointers to 64-bit resource addresses to work.
- */
 resource_size_t pcibios_io_space_offset(struct pci_controller *hose)
 {
-	long vbase = (long)hose->io_base_virt;
-	long io_base = _IO_BASE;
-
-	return (resource_size_t)(vbase - io_base);
+	return (unsigned long) hose->io_base_virt - _IO_BASE;
 }
 
 static void pcibios_setup_phb_resources(struct pci_controller *hose,
@@ -1577,7 +1570,6 @@ int early_find_capability(struct pci_controller *hose, int bus, int devfn,
 {
 	return pci_bus_find_capability(fake_pci_bus(hose, bus), devfn, cap);
 }
-EXPORT_SYMBOL_GPL(early_find_capability);
 
 struct device_node *pcibios_get_phb_of_node(struct pci_bus *bus)
 {

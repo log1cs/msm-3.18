@@ -373,8 +373,6 @@ config NET_DROP_MONITOR
 
 endmenu
 
-source "net/Kconfig.snsc"
-
 endmenu
 
 source "net/ax25/Kconfig"

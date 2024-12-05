@@ -232,14 +232,12 @@ static void ovl_dir_reset(struct file *file)
 }
 
 static int ovl_dir_mark_whiteouts(struct dentry *dir,
-				  struct ovl_readdir_data *rdd,
-				  struct dentry *ovldir)
+				  struct ovl_readdir_data *rdd)
 {
 	struct ovl_cache_entry *p;
 	struct dentry *dentry;
 	const struct cred *old_cred;
 	struct cred *override_cred;
-	int legacy = ovl_config_legacy(ovldir);
 
 	override_cred = prepare_creds();
 	if (!override_cred) {
@@ -258,14 +256,14 @@ static int ovl_dir_mark_whiteouts(struct dentry *dir,
 		if (p->is_cursor)
 			continue;
 
-		if (p->type != DT_CHR && (!legacy || p->type != DT_LNK))
+		if (p->type != DT_CHR)
 			continue;
 
 		dentry = lookup_one_len(p->name, dir, p->len);
 		if (IS_ERR(dentry))
 			continue;
 
-		p->is_whiteout = ovl_is_whiteout(dentry, ovldir);
+		p->is_whiteout = ovl_is_whiteout(dentry);
 		dput(dentry);
 	}
 	mutex_unlock(&dir->d_inode->i_mutex);
@@ -297,7 +295,7 @@ static int ovl_dir_read_merged(struct dentry *dentry, struct list_head *list)
 			goto out;
 
 		if (lowerpath.dentry) {
-			err = ovl_dir_mark_whiteouts(upperpath.dentry, &rdd, dentry);
+			err = ovl_dir_mark_whiteouts(upperpath.dentry, &rdd);
 			if (err)
 				goto out;
 		}

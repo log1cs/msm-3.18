@@ -1317,9 +1317,6 @@ static void l2tp_tunnel_del_work(struct work_struct *work)
 	struct sock *sk = NULL;
 
 	tunnel = container_of(work, struct l2tp_tunnel, del_work);
-
-	l2tp_tunnel_closeall(tunnel);
-
 	sk = l2tp_tunnel_sock_lookup(tunnel);
 	if (!sk)
 		goto out;
@@ -1378,9 +1375,9 @@ static int l2tp_tunnel_sock_create(struct net *net,
 			memcpy(&udp_conf.peer_ip6, cfg->peer_ip6,
 			       sizeof(udp_conf.peer_ip6));
 			udp_conf.use_udp6_tx_checksums =
-			    cfg->udp6_zero_tx_checksums;
+			   !cfg->udp6_zero_tx_checksums;
 			udp_conf.use_udp6_rx_checksums =
-			    cfg->udp6_zero_rx_checksums;
+			   !cfg->udp6_zero_rx_checksums;
 		} else
 #endif
 		{
@@ -1642,12 +1639,15 @@ EXPORT_SYMBOL_GPL(l2tp_tunnel_create);
 
 /* This function is used by the netlink TUNNEL_DELETE command.
  */
-void l2tp_tunnel_delete(struct l2tp_tunnel *tunnel)
+int l2tp_tunnel_delete(struct l2tp_tunnel *tunnel)
 {
-	if (!test_and_set_bit(0, &tunnel->dead)) {
-		l2tp_tunnel_inc_refcount(tunnel);
-		queue_work(l2tp_wq, &tunnel->del_work);
+	l2tp_tunnel_inc_refcount(tunnel);
+	l2tp_tunnel_closeall(tunnel);
+	if (false == queue_work(l2tp_wq, &tunnel->del_work)) {
+		l2tp_tunnel_dec_refcount(tunnel);
+		return 1;
 	}
+	return 0;
 }
 EXPORT_SYMBOL_GPL(l2tp_tunnel_delete);
 

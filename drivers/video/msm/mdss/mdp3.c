@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  * Copyright (C) 2007 Google Incorporated
  *
  * This software is licensed under the terms of the GNU General Public
@@ -46,6 +46,8 @@
 #include <linux/msm-bus-board.h>
 #include <linux/qcom_iommu.h>
 #include <linux/msm_iommu_domains.h>
+#include <linux/vmalloc.h>
+#include <soc/qcom/scm.h>
 
 #include <linux/msm_dma_iommu_mapping.h>
 
@@ -152,6 +154,18 @@ struct mdp3_iommu_ctx_map mdp3_iommu_contexts[MDP3_IOMMU_CTX_MAX] = {
 		.attached = 0,
 	},
 };
+
+static int mdp3_get_domain(u32 flags)
+{
+	int domain;
+
+	if (flags & MDP_SECURE_DISPLAY_OVERLAY_SESSION)
+		domain =  MDSS_IOMMU_DOMAIN_SECURE;
+	else
+		domain = MDSS_IOMMU_DOMAIN_UNSECURE;
+
+	return domain;
+}
 
 static irqreturn_t mdp3_irq_handler(int irq, void *ptr)
 {
@@ -449,12 +463,16 @@ static int mdp3_clk_update(u32 clk_idx, u32 enable)
 			mdp3_res->clock_ref_count[clk_idx]--;
 			return ret;
 		}
+		if (clk_idx == MDP3_CLK_MDP_CORE)
+			MDSS_XLOG(enable);
 		ret = clk_enable(clk);
 		if (ret)
 			pr_err("%s: clock enable failed %d\n", __func__,
 					clk_idx);
 	} else if (count == 0) {
 		pr_debug("clk=%d disable\n", clk_idx);
+		if (clk_idx == MDP3_CLK_MDP_CORE)
+			MDSS_XLOG(enable);
 		clk_disable(clk);
 		clk_unprepare(clk);
 		ret = 0;
@@ -1815,7 +1833,7 @@ out:
 int mdp3_put_img(struct mdp3_img_data *data, int client)
 {
 	struct ion_client *iclient = mdp3_res->ion_client;
-	int dom = (mdp3_res->domains + MDP3_IOMMU_DOMAIN_UNSECURE)->domain_idx;
+	int dom = mdp3_get_domain(data->flags);
 	int dir = DMA_BIDIRECTIONAL;
 
 	if (data->flags & MDP_MEMORY_ID_TYPE_FB) {
@@ -1823,16 +1841,21 @@ int mdp3_put_img(struct mdp3_img_data *data, int client)
 		fdput(data->srcp_f);
 		memset(&data->srcp_f, 0, sizeof(struct fd));
 	} else if (!IS_ERR_OR_NULL(data->srcp_dma_buf)) {
-		pr_debug("ion hdl = %pK buf=0x%pa\n", data->srcp_dma_buf,
-							&data->addr);
+		pr_debug("ion hdl = %pK buf=0x%pa domain = %d\n",
+			data->srcp_dma_buf, &data->addr, dom);
+
 		if (!iclient) {
 			pr_err("invalid ion client\n");
 			return -ENOMEM;
 		}
 		if (data->mapped) {
-			mdss_smmu_unmap_dma_buf(data->srcp_table,
-						dom, dir,
-					data->srcp_dma_buf);
+			if (client == MDP3_CLIENT_PPP ||
+						client == MDP3_CLIENT_DMA_P)
+				mdss_smmu_unmap_dma_buf(data->tab_clone,
+					dom, dir, data->srcp_dma_buf);
+			else
+				mdss_smmu_unmap_dma_buf(data->srcp_table,
+					dom, dir, data->srcp_dma_buf);
 			data->mapped = false;
 		}
 		if (!data->skip_detach) {
@@ -1847,18 +1870,76 @@ int mdp3_put_img(struct mdp3_img_data *data, int client)
 	} else {
 		return -EINVAL;
 	}
+	if (client == MDP3_CLIENT_PPP || client == MDP3_CLIENT_DMA_P) {
+		vfree(data->tab_clone->sgl);
+		kfree(data->tab_clone);
+	}
 	return 0;
+}
+
+int mdp3_map_layer(struct mdp3_img_data *data, int client)
+{
+	int ret = 0;
+	int dom = mdp3_get_domain(data->flags);
+
+	if (client == MDP3_CLIENT_PPP || client == MDP3_CLIENT_DMA_P) {
+		ret = mdss_smmu_map_dma_buf(data->srcp_dma_buf,
+			data->tab_clone, dom,
+			&data->addr, &data->len,
+			DMA_BIDIRECTIONAL);
+	} else {
+		ret = mdss_smmu_map_dma_buf(data->srcp_dma_buf,
+			data->srcp_table, dom, &data->addr,
+			&data->len, DMA_BIDIRECTIONAL);
+	}
+
+	if (IS_ERR_VALUE(ret)) {
+		pr_err("smmu map dma buf failed: (%d)\n", ret);
+		goto err_unmap;
+	}
+
+	data->mapped = true;
+
+	if (client ==  MDP3_CLIENT_PPP || client == MDP3_CLIENT_DMA_P) {
+		data->addr  += data->tab_clone->sgl->length;
+		data->len   -= data->tab_clone->sgl->length;
+	}
+
+	if (!ret && (data->offset < data->len)) {
+		data->addr += data->offset;
+		data->len -= data->offset;
+		pr_debug("ihdl=%pK buf=0x%pa len=0x%lx domain = %d\n",
+			data->srcp_dma_buf, &data->addr, data->len, dom);
+	} else {
+		mdp3_put_img(data, client);
+		return -EINVAL;
+	}
+
+	return ret;
+
+err_unmap:
+	dma_buf_unmap_attachment(data->srcp_attachment, data->srcp_table,
+			mdss_smmu_dma_data_direction(DMA_BIDIRECTIONAL));
+	dma_buf_detach(data->srcp_dma_buf, data->srcp_attachment);
+	dma_buf_put(data->srcp_dma_buf);
+
+	if (client ==  MDP3_CLIENT_PPP || client == MDP3_CLIENT_DMA_P) {
+		vfree(data->tab_clone->sgl);
+		kfree(data->tab_clone);
+	}
+	return ret;
 }
 
 int mdp3_get_img(struct msmfb_data *img, struct mdp3_img_data *data, int client)
 {
 	struct fd f;
-	int ret = -EINVAL;
+	int ret = 0;
 	int fb_num;
 	struct ion_client *iclient = mdp3_res->ion_client;
-	int dom = (mdp3_res->domains + MDP3_IOMMU_DOMAIN_UNSECURE)->domain_idx;
+	int dom = mdp3_get_domain(data->flags);
 
-	data->flags = img->flags;
+	data->flags |= img->flags;
+	data->offset = img->offset;
 
 	if (img->flags & MDP_MEMORY_ID_TYPE_FB) {
 		f = fdget(img->memory_id);
@@ -1909,18 +1990,24 @@ int mdp3_get_img(struct msmfb_data *img, struct mdp3_img_data *data, int client)
 				goto err_detach;
 			}
 
-			ret = mdss_smmu_map_dma_buf(data->srcp_dma_buf,
-					data->srcp_table, dom,
-				&data->addr, &data->len, DMA_BIDIRECTIONAL);
-
-			if (IS_ERR_VALUE(ret)) {
-				pr_err("smmu map dma buf failed: (%d)\n", ret);
-				goto err_unmap;
+			if (client == MDP3_CLIENT_PPP ||
+						client == MDP3_CLIENT_DMA_P) {
+				data->tab_clone =
+				mdss_smmu_sg_table_clone(data->srcp_table,
+							GFP_KERNEL, true);
+				if (IS_ERR_OR_NULL(data->tab_clone)) {
+					if (!(data->tab_clone))
+						ret = -EINVAL;
+					else
+						ret = PTR_ERR(data->tab_clone);
+					goto clone_err;
+				}
+				data->mapped = false;
+				data->skip_detach = false;
+				return ret;
 			}
+		}
 
-		data->mapped = true;
-		data->skip_detach = false;
-	}
 done:
 	if (!ret && (img->offset < data->len)) {
 		data->addr += img->offset;
@@ -1936,18 +2023,14 @@ done:
 	}
 	return ret;
 
+clone_err:
+	dma_buf_unmap_attachment(data->srcp_attachment, data->srcp_table,
+		mdss_smmu_dma_data_direction(DMA_BIDIRECTIONAL));
 err_detach:
 	dma_buf_detach(data->srcp_dma_buf, data->srcp_attachment);
 err_put:
 	dma_buf_put(data->srcp_dma_buf);
 	return ret;
-err_unmap:
-	dma_buf_unmap_attachment(data->srcp_attachment, data->srcp_table,
-			mdss_smmu_dma_data_direction(DMA_BIDIRECTIONAL));
-	dma_buf_detach(data->srcp_dma_buf, data->srcp_attachment);
-	dma_buf_put(data->srcp_dma_buf);
-	return ret;
-
 }
 
 int mdp3_iommu_enable(int client)
@@ -2142,6 +2225,12 @@ void mdp3_release_splash_memory(struct msm_fb_data_type *mfd)
 {
 	/* Give back the reserved memory to the system */
 	if (mdp3_res->splash_mem_addr) {
+		if ((mfd->panel.type == MIPI_VIDEO_PANEL) &&
+				(mdp3_res->cont_splash_en)) {
+			mdss_smmu_unmap(MDSS_IOMMU_DOMAIN_UNSECURE,
+				mdp3_res->splash_mem_addr,
+				mdp3_res->splash_mem_size);
+		}
 		mdp3_free(mfd);
 		pr_debug("mdp3_release_splash_memory\n");
 		memblock_free(mdp3_res->splash_mem_addr,
@@ -2213,10 +2302,8 @@ static int mdp3_is_display_on(struct mdss_panel_data *pdata)
 
 	mdp3_res->splash_mem_addr = MDP3_REG_READ(MDP3_REG_DMA_P_IBUF_ADDR);
 
-	if (pdata->panel_info.type == MIPI_CMD_PANEL) {
-		if (mdp3_clk_enable(0, 0))
-			pr_err("fail to turn off MDP core clks\n");
-	}
+	if (mdp3_clk_enable(0, 0))
+		pr_err("fail to turn off MDP core clks\n");
 	return rc;
 }
 
@@ -2236,7 +2323,8 @@ static int mdp3_continuous_splash_on(struct mdss_panel_data *pdata)
 		pr_err("invalid bus handle %d\n", bus_handle->handle);
 		return -EINVAL;
 	}
-	mdp3_calc_dma_res(panel_info, &mdp_clk_rate, &ab, &ib, panel_info->bpp);
+	mdp3_calc_dma_res(panel_info, &mdp_clk_rate, &ab,
+					&ib, MAX_BPP_SUPPORTED);
 
 	mdp3_clk_set_rate(MDP3_CLK_VSYNC, MDP_VSYNC_CLK_RATE,
 			MDP3_CLIENT_DMA_P);
@@ -2316,6 +2404,7 @@ static int mdp3_panel_register_done(struct mdss_panel_data *pdata)
 	if (pdata->panel_info.cont_splash_enabled == false)
 		mdp3_res->allow_iommu_update = true;
 
+	mdss_res->pdata = pdata;
 	return rc;
 }
 
@@ -2401,6 +2490,7 @@ static int mdp3_debug_init(struct platform_device *pdev)
 	mdss_res->mdss_util = mdp3_res->mdss_util;
 
 	mdata->debug_inf.debug_enable_clock = mdp3_debug_enable_clock;
+	mdata->mdp_rev = mdp3_res->mdp_rev;
 
 	rc = mdss_debugfs_init(mdata);
 	if (rc)
@@ -2722,6 +2812,7 @@ int mdp3_footswitch_ctrl(int enable)
 	int active_cnt = 0;
 
 	mutex_lock(&mdp3_res->fs_idle_pc_lock);
+	MDSS_XLOG(enable);
 	if (!mdp3_res->fs_ena && enable) {
 		rc = regulator_enable(mdp3_res->fs);
 		if (rc) {
@@ -2777,17 +2868,14 @@ int mdp3_panel_get_intf_status(u32 disp_num, u32 intf_type)
 	/* DSI video mode or command mode */
 	rc = (status == 0x180000) || (status == 0x080000);
 
-	/* For Video mode panel do not disable clock */
-	if (!(status == 0x180000)) {
-		if (mdp3_clk_enable(0, 0))
-			pr_err("fail to turn off MDP core clks\n");
-	}
+	if (mdp3_clk_enable(0, 0))
+		pr_err("fail to turn off MDP core clks\n");
 	return rc;
 }
 
 static int mdp3_probe(struct platform_device *pdev)
 {
-	int rc;
+	int rc, scm_ret = 0;
 	static struct msm_mdp_interface mdp3_interface = {
 	.init_fnc = mdp3_init,
 	.fb_mem_get_iommu_domain = mdp3_fb_mem_get_iommu_domain,
@@ -2906,6 +2994,10 @@ static int mdp3_probe(struct platform_device *pdev)
 
 	__mdp3_set_supported_formats();
 
+	rc = scm_restore_sec_cfg(SEC_DEVICE_MDP3, 0, &scm_ret);
+	if (rc)
+		pr_err("Restore secure cfg failed\n");
+
 	mdp3_res->mdss_util->mdp_probe_done = true;
 	pr_debug("%s: END\n", __func__);
 
@@ -2960,7 +3052,7 @@ static  int mdp3_resume_sub(void)
 static int mdp3_pm_suspend(struct device *dev)
 {
 	dev_dbg(dev, "Display pm suspend\n");
-
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_suspend_sub();
 }
 
@@ -2977,6 +3069,7 @@ static int mdp3_pm_resume(struct device *dev)
 	pm_runtime_set_suspended(dev);
 	pm_runtime_enable(dev);
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_resume_sub();
 }
 #endif
@@ -2986,6 +3079,7 @@ static int mdp3_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	pr_debug("Display suspend\n");
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_suspend_sub();
 }
 
@@ -2993,6 +3087,7 @@ static int mdp3_resume(struct platform_device *pdev)
 {
 	pr_debug("Display resume\n");
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_resume_sub();
 }
 #else
@@ -3013,6 +3108,7 @@ static int mdp3_runtime_resume(struct device *dev)
 	if (!mdp3_res->idle_pc)
 		device_for_each_child(dev, &device_on, mdss_fb_suspres_panel);
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	mdp3_footswitch_ctrl(1);
 
 	return 0;
@@ -3037,6 +3133,7 @@ static int mdp3_runtime_suspend(struct device *dev)
 		return -EBUSY;
 	}
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	mdp3_footswitch_ctrl(0);
 
 	/* do not suspend panels when going in to idle power collapse */

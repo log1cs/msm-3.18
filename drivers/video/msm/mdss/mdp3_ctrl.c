@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,6 +23,8 @@
 #include <linux/dma-buf.h>
 #include <linux/pm_runtime.h>
 #include <linux/sw_sync.h>
+#include <linux/iommu.h>
+#include <soc/qcom/scm.h>
 
 #include "mdp3_ctrl.h"
 #include "mdp3.h"
@@ -30,6 +32,7 @@
 #include "mdss_smmu.h"
 
 #define VSYNC_EXPIRE_TICK	4
+#define MEM_PROTECT_SD_CTRL	0xF
 
 static void mdp3_ctrl_pan_display(struct msm_fb_data_type *mfd);
 static int mdp3_overlay_unset(struct msm_fb_data_type *mfd, int ndx);
@@ -136,7 +139,7 @@ int mdp3_ctrl_notify(struct mdp3_session_data *ses, int event)
 	return blocking_notifier_call_chain(&ses->notifier_head, event, ses);
 }
 
-static void mdp3_dispatch_dma_done(struct work_struct *work)
+static void mdp3_dispatch_dma_done(struct kthread_work *work)
 {
 	struct mdp3_session_data *session;
 	int cnt = 0;
@@ -148,7 +151,7 @@ static void mdp3_dispatch_dma_done(struct work_struct *work)
 		return;
 
 	cnt = atomic_read(&session->dma_done_cnt);
-
+	MDSS_XLOG(cnt);
 	while (cnt > 0) {
 		mdp3_ctrl_notify(session, MDP_NOTIFY_FRAME_DONE);
 		atomic_dec(&session->dma_done_cnt);
@@ -164,6 +167,7 @@ static void mdp3_dispatch_clk_off(struct work_struct *work)
 	int retry_count = 2;
 
 	pr_debug("%s\n", __func__);
+	MDSS_XLOG(XLOG_FUNC_ENTRY, __LINE__);
 	session = container_of(work, struct mdp3_session_data,
 				clk_off_work);
 	if (!session)
@@ -174,6 +178,7 @@ static void mdp3_dispatch_clk_off(struct work_struct *work)
 		atomic_read(&session->vsync_countdown) > 0) {
 		mutex_unlock(&session->lock);
 		pr_debug("%s: Ignoring clk shut down\n", __func__);
+		MDSS_XLOG(XLOG_FUNC_EXIT, __LINE__);
 		return;
 	}
 
@@ -202,6 +207,7 @@ retry_dma_done:
 	}
 	mdp3_ctrl_vsync_enable(session->mfd, 0);
 	mdp3_ctrl_clk_enable(session->mfd, 0);
+	MDSS_XLOG(XLOG_FUNC_EXIT, __LINE__);
 	mutex_unlock(&session->lock);
 }
 
@@ -244,10 +250,18 @@ static void mdp3_vsync_retire_work_handler(struct work_struct *work)
 	mdp3_vsync_retire_signal(mdp3_session->mfd, 1);
 }
 
+void mdp3_hist_intr_notify(struct mdp3_dma *dma)
+{
+	dma->hist_events++;
+	sysfs_notify_dirent(dma->hist_event_sd);
+	pr_debug("%s:: hist_events = %u\n", __func__, dma->hist_events);
+}
+
 void vsync_notify_handler(void *arg)
 {
 	struct mdp3_session_data *session = (struct mdp3_session_data *)arg;
 	session->vsync_time = ktime_get();
+	MDSS_XLOG(ktime_to_ms(session->vsync_time));
 	sysfs_notify_dirent(session->vsync_event_sd);
 }
 
@@ -255,7 +269,7 @@ void dma_done_notify_handler(void *arg)
 {
 	struct mdp3_session_data *session = (struct mdp3_session_data *)arg;
 	atomic_inc(&session->dma_done_cnt);
-	schedule_work(&session->dma_done_work);
+	queue_kthread_work(&session->worker, &session->dma_done_work);
 	complete_all(&session->dma_completion);
 }
 
@@ -351,12 +365,46 @@ void mdp3_vsync_timer_func(unsigned long arg)
 	}
 }
 
+int config_secure_display(struct mdp3_session_data *mdp3_session)
+{
+	struct sd_ctrl_req {
+		unsigned int enable;
+	} __attribute__ ((__packed__)) request;
+	unsigned int resp = -1;
+	int ret = 0;
+	struct scm_desc desc;
+
+	if (mdp3_session->transition_state == NONSECURE_TO_SECURE)
+		atomic_inc(&mdp3_session->secure_display);
+	else if (mdp3_session->transition_state == SECURE_TO_NONSECURE)
+		atomic_dec(&mdp3_session->secure_display);
+
+	request.enable = atomic_read(&mdp3_session->secure_display);
+	desc.args[0] = request.enable;
+	desc.arginfo = SCM_ARGS(1);
+
+	if (!is_scm_armv8()) {
+		ret = scm_call(SCM_SVC_MP, MEM_PROTECT_SD_CTRL,
+			&request, sizeof(request), &resp, sizeof(resp));
+	} else {
+		ret = scm_call2(SCM_SIP_FNID(SCM_SVC_MP,
+				MEM_PROTECT_SD_CTRL), &desc);
+		resp = desc.ret[0];
+	}
+
+	pr_debug("scm_call MEM_PROTECT_SD_CTRL(%u): ret=%di resp =%d\n",
+			request.enable, ret, resp);
+
+	return resp;
+}
+
 static int mdp3_ctrl_async_blit_req(struct msm_fb_data_type *mfd,
 	void __user *p)
 {
 	struct mdp_async_blit_req_list req_list_header;
 	int rc, count;
 	void __user *p_req;
+	struct mdp3_session_data *session;
 
 	if (copy_from_user(&req_list_header, p, sizeof(req_list_header)))
 		return -EFAULT;
@@ -364,6 +412,23 @@ static int mdp3_ctrl_async_blit_req(struct msm_fb_data_type *mfd,
 	count = req_list_header.count;
 	if (count < 0 || count >= MAX_BLIT_REQ)
 		return -EINVAL;
+
+	if (!mfd || !mfd->mdp.private1)
+		return -EINVAL;
+
+	session = (struct mdp3_session_data *)mfd->mdp.private1;
+
+	if (atomic_read(&session->secure_display) &&
+		(mdp3_ctrl_get_intf_type(mfd) ==
+			MDP3_DMA_OUTPUT_SEL_DSI_VIDEO)) {
+		rc = wait_for_completion_timeout(&session->secure_completion,
+			msecs_to_jiffies(84));
+		if (!rc) {
+			pr_err("Timed out waiting for completion of secure display\n");
+			return -EINVAL;
+		}
+	}
+
 	rc = mdp3_ppp_parse_req(p_req, &req_list_header, 1);
 	if (!rc)
 		rc = copy_to_user(p, &req_list_header, sizeof(req_list_header));
@@ -386,6 +451,40 @@ static int mdp3_ctrl_blit_req(struct msm_fb_data_type *mfd, void __user *p)
 	req_list_header.sync.acq_fen_fd_cnt = 0;
 	rc = mdp3_ppp_parse_req(p_req, &req_list_header, 0);
 	return rc;
+}
+
+static ssize_t mdp3_bl_show_event(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdp3_session_data *mdp3_session = NULL;
+	int ret;
+
+	if (!mfd || !mfd->mdp.private1)
+		return -EAGAIN;
+
+	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", mdp3_session->bl_events);
+	return ret;
+}
+
+static ssize_t mdp3_hist_show_event(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdp3_session_data *mdp3_session = NULL;
+	struct mdp3_dma *dma = NULL;
+	int ret;
+
+	if (!mfd || !mfd->mdp.private1)
+		return -EAGAIN;
+
+	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
+	dma = (struct mdp3_dma *)mdp3_session->dma;
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", dma->hist_events);
+	return ret;
 }
 
 static ssize_t mdp3_vsync_show_event(struct device *dev,
@@ -475,6 +574,8 @@ static ssize_t mdp3_dyn_pu_store(struct device *dev,
 	return count;
 }
 
+static DEVICE_ATTR(hist_event, S_IRUGO, mdp3_hist_show_event, NULL);
+static DEVICE_ATTR(bl_event, S_IRUGO, mdp3_bl_show_event, NULL);
 static DEVICE_ATTR(vsync_event, S_IRUGO, mdp3_vsync_show_event, NULL);
 static DEVICE_ATTR(packpattern, S_IRUGO, mdp3_packpattern_show, NULL);
 static DEVICE_ATTR(dyn_pu, S_IRUGO | S_IWUSR | S_IWGRP, mdp3_dyn_pu_show,
@@ -483,6 +584,8 @@ static DEVICE_ATTR(dyn_pu, S_IRUGO | S_IWUSR | S_IWGRP, mdp3_dyn_pu_show,
 static struct attribute *generic_attrs[] = {
 	&dev_attr_packpattern.attr,
 	&dev_attr_dyn_pu.attr,
+	&dev_attr_hist_event.attr,
+	&dev_attr_bl_event.attr,
 	NULL,
 };
 
@@ -601,8 +704,11 @@ int mdp3_ctrl_get_source_format(u32 imgType)
 	case MDP_RGB_888:
 		format = MDP3_DMA_IBUF_FORMAT_RGB888;
 		break;
+	case MDP_XRGB_8888:
 	case MDP_ARGB_8888:
 	case MDP_RGBA_8888:
+	case MDP_BGRA_8888:
+	case MDP_RGBX_8888:
 		format = MDP3_DMA_IBUF_FORMAT_XRGB8888;
 		break;
 	default:
@@ -785,6 +891,7 @@ static int mdp3_ctrl_on(struct msm_fb_data_type *mfd)
 	int rc = 0;
 	struct mdp3_session_data *mdp3_session;
 	struct mdss_panel_data *panel;
+	int scm_ret = 0;
 
 	pr_debug("mdp3_ctrl_on\n");
 	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
@@ -795,6 +902,7 @@ static int mdp3_ctrl_on(struct msm_fb_data_type *mfd)
 	}
 	mutex_lock(&mdp3_session->lock);
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY, __LINE__, mfd->panel_power_state);
 	panel = mdp3_session->panel;
 	/* make sure DSI host is initialized properly */
 	if (panel) {
@@ -819,6 +927,7 @@ static int mdp3_ctrl_on(struct msm_fb_data_type *mfd)
 
 	if (mdp3_session->status) {
 		pr_debug("fb%d is on already\n", mfd->index);
+		MDSS_XLOG(XLOG_FUNC_EXIT, __LINE__, mfd->panel_power_state);
 		goto end;
 	}
 
@@ -827,6 +936,10 @@ static int mdp3_ctrl_on(struct msm_fb_data_type *mfd)
 		mdp3_session->status = 1;
 		goto end;
 	}
+
+	rc = scm_restore_sec_cfg(SEC_DEVICE_MDP3, 0, &scm_ret);
+	if (rc)
+		pr_err("Restoring secure cfg failed\n");
 
 	/*
 	* Get a reference to the runtime pm device.
@@ -905,6 +1018,7 @@ static int mdp3_ctrl_on(struct msm_fb_data_type *mfd)
 		mdp3_session->status = 1;
 
 	mdp3_ctrl_pp_resume(mfd);
+	MDSS_XLOG(XLOG_FUNC_EXIT, __LINE__, mfd->panel_power_state);
 on_error:
 	if (rc || (mdp3_res->idle_pc_enabled &&
 			(mfd->panel_info->type == MIPI_CMD_PANEL))) {
@@ -942,6 +1056,8 @@ static int mdp3_ctrl_off(struct msm_fb_data_type *mfd)
 	 */
 	pm_runtime_get_sync(&mdp3_res->pdev->dev);
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY, __LINE__, mdss_fb_is_power_on_ulp(mfd),
+		mfd->panel_power_state);
 	panel = mdp3_session->panel;
 	mutex_lock(&mdp3_session->lock);
 
@@ -1083,6 +1199,7 @@ static int mdp3_ctrl_off(struct msm_fb_data_type *mfd)
 		mdp3_ctrl_clk_enable(mdp3_session->mfd, 0);
 	}
 off_error:
+	MDSS_XLOG(XLOG_FUNC_EXIT, __LINE__);
 	mutex_unlock(&mdp3_session->lock);
 	/* Release the last reference to the runtime device */
 	pm_runtime_put(&mdp3_res->pdev->dev);
@@ -1112,16 +1229,26 @@ int mdp3_ctrl_reset(struct msm_fb_data_type *mfd)
 	pr_debug("mdp3_ctrl_reset idle_pc %s FS_EN %s\n",
 		mdp3_res->idle_pc ? "True":"False",
 		mdp3_res->fs_ena ? "True":"False");
-	if (mdp3_res->idle_pc || mdp3_res->fs_ena) {
+	if (mdp3_res->idle_pc) {
 		mdp3_clk_enable(1, 0);
 		mdp3_dynamic_clock_gating_ctrl(0);
 		mdp3_qos_remapper_setup(panel);
 	}
 
+	/*Map the splash addr for VIDEO mode panel before smmu attach*/
+	if ((mfd->panel.type == MIPI_VIDEO_PANEL) &&
+				(mdp3_session->in_splash_screen)) {
+		rc = mdss_smmu_map(MDSS_IOMMU_DOMAIN_UNSECURE,
+				mdp3_res->splash_mem_addr,
+				mdp3_res->splash_mem_addr,
+				mdp3_res->splash_mem_size,
+				IOMMU_READ | IOMMU_NOEXEC);
+	}
+
 	rc = mdp3_iommu_enable(MDP3_CLIENT_DMA_P);
 	if (rc) {
 		pr_err("fail to attach dma iommu\n");
-		if (mdp3_res->idle_pc || mdp3_res->fs_ena)
+		if (mdp3_res->idle_pc)
 			mdp3_clk_enable(0, 0);
 		goto reset_error;
 	}
@@ -1334,6 +1461,8 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 	int rc = 0;
 	static bool splash_done;
 	struct mdss_panel_data *panel;
+	bool null_commit = false;
+	bool is_panel_type_cmd = false;
 
 	if (!mfd || !mfd->mdp.private1)
 		return -EINVAL;
@@ -1345,7 +1474,34 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 
 	if (mdp3_bufq_count(&mdp3_session->bufq_in) == 0) {
 		pr_debug("no buffer in queue yet\n");
-		return -EPERM;
+		null_commit = true;
+	}
+
+	if (null_commit && mdp3_ctrl_get_intf_type(mfd) ==
+			MDP3_DMA_OUTPUT_SEL_DSI_VIDEO) {
+		mutex_lock(&mdp3_session->lock);
+		reinit_completion(&mdp3_session->secure_completion);
+		mdp3_ctrl_reset_countdown(mdp3_session, mfd);
+		mdp3_ctrl_clk_enable(mfd, 1);
+		rc = mdp3_session->dma->handle_null_commit(mdp3_session->dma,
+				mdp3_session->intf);
+
+		if (atomic_read(&mdp3_session->secure_display)) {
+			mdp3_session->transition_state = SECURE_TO_NONSECURE;
+			rc = config_secure_display(mdp3_session);
+			if (rc)
+				pr_err("Configuring secure display failed\n");
+		}
+		complete_all(&mdp3_session->secure_completion);
+		mdp3_ctrl_notify(mdp3_session, MDP_NOTIFY_FRAME_DONE);
+		if (mdp3_bufq_count(&mdp3_session->bufq_out) > 0) {
+			data = mdp3_bufq_pop(&mdp3_session->bufq_out);
+			if (data)
+				mdp3_put_img(data, MDP3_CLIENT_DMA_P);
+		}
+		mdp3_session->vsync_before_commit = 0;
+		mutex_unlock(&mdp3_session->lock);
+		return 0;
 	}
 
 	if (panel_info->partial_update_enabled &&
@@ -1386,11 +1542,65 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 		return -EPERM;
 	}
 
+	if (mfd->panel.type == MIPI_CMD_PANEL)
+		is_panel_type_cmd = true;
+
 	mdp3_ctrl_notify(mdp3_session, MDP_NOTIFY_FRAME_BEGIN);
 	data = mdp3_bufq_pop(&mdp3_session->bufq_in);
 	if (data) {
 		mdp3_ctrl_reset_countdown(mdp3_session, mfd);
 		mdp3_ctrl_clk_enable(mfd, 1);
+		if (mdp3_session->dma->output_config.out_sel ==
+					MDP3_DMA_OUTPUT_SEL_DSI_CMD) {
+			rc = mdp3_session->dma->wait_for_dma(mdp3_session->dma,
+					mdp3_session->intf);
+			if (!rc && !mdp3_session->first_commit) {
+				pr_err("dma done timedout\n");
+				rc = -ETIMEDOUT;
+				goto frame_done;
+			}
+		}
+
+		/* For command mode panels, the secure display should be enabled
+		 * only after the previous dma done is completed
+		 */
+
+		if (mdp3_session->transition_state != NO_TRANSITION) {
+			rc = config_secure_display(mdp3_session);
+			if (rc) {
+				pr_err("Configuring secure display failed\n");
+				mutex_unlock(&mdp3_session->lock);
+				return -EINVAL;
+			}
+		}
+		if (is_panel_type_cmd) {
+			rc = mdp3_iommu_enable(MDP3_CLIENT_DMA_P);
+			if (rc) {
+				pr_err("failed to enable iommu\n");
+				mdp3_put_img(data, MDP3_CLIENT_DMA_P);
+				mutex_unlock(&mdp3_session->lock);
+				return rc;
+			}
+		}
+
+		rc = mdp3_map_layer(data, MDP3_CLIENT_DMA_P);
+		if (data->len < mdp3_session->dma->source_config.stride *
+				mdp3_session->dma->source_config.height) {
+			pr_err("buf size(0x%lx) is smaller than dma config(0x%x)\n",
+				data->len,
+				(mdp3_session->dma->source_config.stride *
+				mdp3_session->dma->source_config.height));
+
+			mdp3_put_img(data, MDP3_CLIENT_DMA_P);
+			if (is_panel_type_cmd)
+				mdp3_iommu_disable(MDP3_CLIENT_DMA_P);
+			mutex_unlock(&mdp3_session->lock);
+			return -EINVAL;
+		}
+
+		if (is_panel_type_cmd)
+			mdp3_iommu_disable(MDP3_CLIENT_DMA_P);
+
 		if (mdp3_session->dma->update_src_cfg &&
 				panel_info->partial_update_enabled) {
 			panel->panel_info.roi.x = mdp3_session->dma->roi.x;
@@ -1398,13 +1608,17 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 			panel->panel_info.roi.w = mdp3_session->dma->roi.w;
 			panel->panel_info.roi.h = mdp3_session->dma->roi.h;
 			rc = mdp3_session->dma->update(mdp3_session->dma,
-					(void *)(int)data->addr,
-					mdp3_session->intf, (void *)panel);
+				(void *)(int)data->addr, mdp3_session->intf,
+				(void *)panel,
+				atomic_read(&mdp3_session->secure_display));
 		} else {
 			rc = mdp3_session->dma->update(mdp3_session->dma,
-					(void *)(int)data->addr,
-					mdp3_session->intf, NULL);
+				(void *)(int)data->addr, mdp3_session->intf,
+				NULL,
+				atomic_read(&mdp3_session->secure_display));
 		}
+
+frame_done:
 		/* This is for the previous frame */
 		if (rc < 0) {
 			mdp3_ctrl_notify(mdp3_session,
@@ -1431,9 +1645,9 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 
 	if (mdp3_session->first_commit) {
 		/*wait to ensure frame is sent to panel*/
-		if (panel_info->mipi.init_delay)
+		if (panel_info->mipi.post_init_delay)
 			msleep(((1000 / panel_info->mipi.frame_rate) + 1) *
-					panel_info->mipi.init_delay);
+					panel_info->mipi.post_init_delay);
 		else
 			msleep(1000 / panel_info->mipi.frame_rate);
 		mdp3_session->first_commit = false;
@@ -1551,9 +1765,23 @@ static void mdp3_ctrl_pan_display(struct msm_fb_data_type *mfd)
 			if (IS_ERR_VALUE(rc))
 				goto pan_error;
 		}
+
+		if (mdp3_ctrl_get_intf_type(mfd) ==
+				MDP3_DMA_OUTPUT_SEL_DSI_CMD) {
+			rc = mdp3_session->dma->wait_for_dma(mdp3_session->dma,
+					mdp3_session->intf);
+			if (!rc && !mdp3_session->first_commit) {
+				pr_err("dma done timedout\n");
+				mdp3_ctrl_notify(mdp3_session,
+					MDP_NOTIFY_FRAME_TIMEOUT);
+				goto pan_error;
+			}
+		}
+
 		rc = mdp3_session->dma->update(mdp3_session->dma,
 				(void *)(int)(mfd->iova + offset),
-				mdp3_session->intf, NULL);
+				mdp3_session->intf, NULL,
+				atomic_read(&mdp3_session->secure_display));
 		/* This is for the previous frame */
 		if (rc < 0) {
 			mdp3_ctrl_notify(mdp3_session,
@@ -1657,12 +1885,16 @@ static int mdp3_get_metadata(struct msm_fb_data_type *mfd,
 		}
 		break;
 	case metadata_op_get_ion_fd:
-		if (mfd->fb_ion_handle) {
+		if (mfd->fb_ion_handle &&  mfd->fb_ion_client) {
+			get_dma_buf(mfd->fbmem_buf);
 			metadata->data.fbmem_ionfd =
-					dma_buf_fd(mfd->fbmem_buf, 0);
-			if (metadata->data.fbmem_ionfd < 0)
+				ion_share_dma_buf_fd(mfd->fb_ion_client,
+					mfd->fb_ion_handle);
+			if (metadata->data.fbmem_ionfd < 0) {
+				dma_buf_put(mfd->fbmem_buf);
 				pr_err("fd allocation failed. fd = %d\n",
 						metadata->data.fbmem_ionfd);
+			}
 		}
 		break;
 	default:
@@ -1753,12 +1985,15 @@ static int mdp3_histogram_start(struct mdp3_session_data *session,
 	pr_debug("mdp3_histogram_start\n");
 
 	ret = mdp3_validate_start_req(req);
-	if (ret)
+	if (ret) {
+		mutex_unlock(&session->lock);
 		return ret;
+	}
 
 	if (!session->dma->histo_op ||
 		!session->dma->config_histo) {
 		pr_err("mdp3_histogram_start not supported\n");
+		mutex_unlock(&session->lock);
 		return -EINVAL;
 	}
 
@@ -1767,6 +2002,7 @@ static int mdp3_histogram_start(struct mdp3_session_data *session,
 	if (session->histo_status) {
 		pr_info("mdp3_histogram_start already started\n");
 		mutex_unlock(&session->histo_lock);
+		mutex_unlock(&session->lock);
 		return 0;
 	}
 
@@ -2247,8 +2483,10 @@ static int mdp3_ctrl_lut_config(struct msm_fb_data_type *mfd,
 
 	dma = mdp3_session->dma;
 
-	if (cfg->cmap.start + cfg->cmap.len > MDP_LUT_SIZE) {
-		pr_err("Invalid arguments\n");
+	if ((cfg->cmap.start > MDP_LUT_SIZE) ||
+		(cfg->cmap.len > MDP_LUT_SIZE) ||
+		(cfg->cmap.start + cfg->cmap.len > MDP_LUT_SIZE)) {
+		pr_err("Invalid arguments.\n");
 		return  -EINVAL;
 	}
 
@@ -2648,6 +2886,10 @@ static int mdp3_ctrl_ioctl_handler(struct msm_fb_data_type *mfd,
 		break;
 	case MSMFB_OVERLAY_PLAY:
 		rc = copy_from_user(&ov_data, argp, sizeof(ov_data));
+		mutex_lock(&mdp3_res->fs_idle_pc_lock);
+		if (mdp3_session->in_splash_screen)
+			mdp3_ctrl_reset(mfd);
+		mutex_unlock(&mdp3_res->fs_idle_pc_lock);
 		if (!rc)
 			rc = mdp3_overlay_play(mfd, &ov_data);
 		if (rc)
@@ -2757,6 +2999,7 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	u32 intf_type = MDP3_DMA_OUTPUT_SEL_DSI_VIDEO;
 	int rc;
 	int splash_mismatch = 0;
+	struct sched_param sched = { .sched_priority = 16 };
 
 	pr_info("mdp3_ctrl_init\n");
 	rc = mdp3_parse_dt_splash(mfd);
@@ -2774,6 +3017,8 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	mdp3_interface->atomic_validate = mdp3_layer_atomic_validate;
 	mdp3_interface->lut_update = NULL;
 	mdp3_interface->configure_panel = mdp3_update_panel_info;
+	mdp3_interface->input_event_handler = NULL;
+	mdp3_interface->signal_retire_fence = NULL;
 
 	mdp3_session = kzalloc(sizeof(struct mdp3_session_data), GFP_KERNEL);
 	if (!mdp3_session) {
@@ -2782,7 +3027,21 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	}
 	mutex_init(&mdp3_session->lock);
 	INIT_WORK(&mdp3_session->clk_off_work, mdp3_dispatch_clk_off);
-	INIT_WORK(&mdp3_session->dma_done_work, mdp3_dispatch_dma_done);
+
+	init_kthread_worker(&mdp3_session->worker);
+	init_kthread_work(&mdp3_session->dma_done_work, mdp3_dispatch_dma_done);
+
+	mdp3_session->thread = kthread_run(kthread_worker_fn, &mdp3_session->worker,
+					   "mdp3_dispatch_dma_done");
+
+	if (IS_ERR(mdp3_session->thread)) {
+		pr_err("Can't initialize mdp3_dispatch_dma_done thread\n");
+		rc = -ENODEV;
+		goto init_done;
+	}
+
+	sched_setscheduler(mdp3_session->thread, SCHED_FIFO, &sched);
+
 	atomic_set(&mdp3_session->vsync_countdown, 0);
 	mutex_init(&mdp3_session->histo_lock);
 	mdp3_session->dma = mdp3_get_dma_pipe(MDP3_DMA_CAP_ALL);
@@ -2819,6 +3078,7 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	mdp3_session->histo_status = 0;
 	mdp3_session->lut_sel = 0;
 	BLOCKING_INIT_NOTIFIER_HEAD(&mdp3_session->notifier_head);
+	atomic_set(&mdp3_session->secure_display, 0);
 
 	init_timer(&mdp3_session->vsync_timer);
 	mdp3_session->vsync_timer.function = mdp3_vsync_timer_func;
@@ -2826,6 +3086,7 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	mdp3_session->vsync_period = 1000 / mfd->panel_info->mipi.frame_rate;
 	mfd->mdp.private1 = mdp3_session;
 	init_completion(&mdp3_session->dma_completion);
+	init_completion(&mdp3_session->secure_completion);
 	if (intf_type != MDP3_DMA_OUTPUT_SEL_DSI_VIDEO)
 		mdp3_session->wait_for_dma_done = mdp3_wait_for_dma_done;
 
@@ -2844,6 +3105,22 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 							"vsync_event");
 	if (!mdp3_session->vsync_event_sd) {
 		pr_err("vsync_event sysfs lookup failed\n");
+		rc = -ENODEV;
+		goto init_done;
+	}
+
+	mdp3_session->dma->hist_event_sd = sysfs_get_dirent(dev->kobj.sd,
+							"hist_event");
+	if (!mdp3_session->dma->hist_event_sd) {
+		pr_err("hist_event sysfs lookup failed\n");
+		rc = -ENODEV;
+		goto init_done;
+	}
+
+	mdp3_session->bl_event_sd = sysfs_get_dirent(dev->kobj.sd,
+							"bl_event");
+	if (!mdp3_session->bl_event_sd) {
+		pr_err("bl_event sysfs lookup failed\n");
 		rc = -ENODEV;
 		goto init_done;
 	}

@@ -14,11 +14,4 @@ config SOUNDWIRE_WCD_CTRL
 	default n
 	help
 	  Select driver for QTI's Soundwire Master Component.
-
-config SNSC_SW_BUS_CLASH_DETECT
-	depends on SOUNDWIRE_WCD_CTRL
-	bool "Notify user on bus clash"
-	default n
-	help
-	  Select to debug if bus clash event occurs.
 endif

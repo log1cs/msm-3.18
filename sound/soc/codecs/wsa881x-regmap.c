@@ -1,6 +1,5 @@
-/* 2020-04-01: File changed by Sony Corporation */
 /*
- * Copyright (c) 2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -199,22 +198,10 @@ void wsa881x_regmap_defaults(struct regmap *regmap, u8 version)
 		return;
 	}
 
-	switch (version) {
-	case WSA881X_1_X:
-		pr_err("%s: WSA Rev 1.x should not be used in commercial device; forcing Rev 2.0", __func__);
-		/* SRBODY-11051 : When WSA881X_1_X, treat as WSA881X_2_0 */
-	case WSA881X_2_0:
-		regcache_cache_only(regmap, true);
-		ret = regmap_multi_reg_write(regmap,
-					     wsa881x_rev_2_0,
-					     ARRAY_SIZE(wsa881x_rev_2_0));
-		regcache_cache_only(regmap, false);
-		break;
-	default:
-		pr_debug("%s: unknown version", __func__);
-		ret = -EINVAL;
-		break;
-	}
+	regcache_cache_only(regmap, true);
+	ret = regmap_multi_reg_write(regmap, wsa881x_rev_2_0,
+				     ARRAY_SIZE(wsa881x_rev_2_0));
+	regcache_cache_only(regmap, false);
 
 	if (ret)
 		pr_debug("%s: Failed to update regmap defaults ret= %d\n",

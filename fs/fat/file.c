@@ -1,4 +1,3 @@
-/* 2017-06-21: File changed by Sony Corporation */
 /*
  *  linux/fs/fat/file.c
  *
@@ -18,176 +17,7 @@
 #include <linux/blkdev.h>
 #include <linux/fsnotify.h>
 #include <linux/security.h>
-#include <linux/fs.h>
-#ifdef CONFIG_SNSC_FS_FAT_IOCTL_CONCAT_DIRTY_PAGES
-#include <linux/pagevec.h>
-#endif
 #include "fat.h"
-
-#ifdef CONFIG_SNSC_FS_FAT_IOCTL_CONCAT_DIRTY_PAGES
-static int fat_dirty_page_range(struct inode *inode, struct file *filp,
-				pgoff_t from, pgoff_t to)
-{
-	struct address_space *mapping = inode->i_mapping;
-	const struct address_space_operations *aops = mapping->a_ops;
-	pgoff_t index;
-	struct page *page;
-	int ret = 0;
-
-	for (index = from; index <= to; index++) {
-		void *fsdata = NULL;
-		loff_t pos = index << PAGE_CACHE_SHIFT;
-
-		cond_resched();
-try_again:
-		ret = pagecache_write_begin(filp, mapping, pos, PAGE_CACHE_SIZE,
-					    0, &page, &fsdata);
-		if (ret)
-			goto fail;
-
-		if (!PageUptodate(page)) {
-			ret = aops->readpage(filp, page);
-			if (unlikely(ret)) {
-				page_cache_release(page);
-				if (ret == AOP_TRUNCATED_PAGE) {
-					goto try_again;
-				}
-				goto fail;
-			}
-
-			ret = lock_page_killable(page);
-			if (unlikely(ret))
-				goto fail;
-			if (!PageUptodate(page)) {
-				if (page->mapping == NULL) {
-					unlock_page(page);
-					page_cache_release(page);
-					goto try_again;
-				}
-				ret = -EIO;
-				goto unlock;
-			}
-		}
-
-		ret = pagecache_write_end(filp, mapping, pos, PAGE_CACHE_SIZE,
-					  PAGE_CACHE_SIZE, page, fsdata);
-		if (ret < 0 || ret != PAGE_CACHE_SIZE)
-			goto fail;
-	}
-	ret = 0;
-out:
-	return ret;
-
-unlock:
-	unlock_page(page);
-	page_cache_release(page);
-fail:
-	ret = -1;
-	goto out;
-}
-
-static int fat_concat_dirty_pages(struct inode *inode, struct file *filp)
-{
-	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
-	struct address_space *mapping = inode->i_mapping;
-	struct pagevec pvec;
-	int nr_pages;
-	int i, err = 0;
-	pgoff_t lindex, last;
-	pgoff_t from, to;
-	int pages_per_clus;
-
-	if (sbi->cluster_size <= PAGE_CACHE_SIZE)
-		return 0;
-
-	pages_per_clus = sbi->cluster_size >> PAGE_CACHE_SHIFT;
-	lindex = 0;
-	last = ALIGN(inode->i_size, PAGE_CACHE_SIZE) >> PAGE_CACHE_SHIFT;
-	from = to = (pgoff_t)-1;
-	while (lindex < last) {
-		pagevec_init(&pvec, 0);
-		nr_pages = pagevec_lookup_tag(&pvec, mapping, &lindex,
-					      PAGECACHE_TAG_DIRTY,
-					      min(last - lindex,
-						  (pgoff_t)PAGEVEC_SIZE));
-		if (nr_pages == 0)
-			break;
-
-		i = 0;
-		if (from == (pgoff_t)-1)
-			from = pvec.pages[i++]->index;
-		for (; i < nr_pages; i++) {
-			pgoff_t index = pvec.pages[i]->index;
-
-			if (index >= last) /* beyond the EOF */
-				break;
-			if (index >= ALIGN(from + 1, pages_per_clus)) {
-				/* found a dirty page in other cluster */
-				if (to != (pgoff_t)-1) {
-					err = fat_dirty_page_range(inode, filp,
-								   from, to);
-					if (err) {
-						pagevec_release(&pvec);
-						return err;
-					}
-				}
-				from = index;
-				to = (pgoff_t)-1;
-			} else {
-				to = index;
-			}
-		}
-
-		pagevec_release(&pvec);
-	}
-	if (to != (pgoff_t)-1)
-		err = fat_dirty_page_range(inode, filp, from, to);
-
-	return err;
-}
-#endif
-
-#ifdef CONFIG_SNSC_FS_FAT_IOCTL_EXPAND_SIZE
-static int fat_expand_size(struct inode *inode, loff_t size)
-{
-	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
-	const unsigned int cluster_size = sbi->cluster_size;
-	int i, err = 0;
-	int cluster, nr_clusters;
-
-	if (IS_RDONLY(inode))
-		return -EROFS;
-	nr_clusters = (size + (cluster_size - 1)) >> sbi->cluster_bits;
-	for (i = 0; i < nr_clusters; i++) {
-		err = fat_alloc_clusters(inode, &cluster, 1);
-		if (err)
-			break;
-		err = fat_chain_add(inode, cluster, 1);
-		if (err)
-			break;
-	}
-	if (err) {
-		if (MSDOS_I(inode)->i_start != 0) {
-			fat_free_clusters(inode, MSDOS_I(inode)->i_start);
-			MSDOS_I(inode)->i_start = 0;
-			MSDOS_I(inode)->i_logstart = 0;
-			inode->i_blocks = 0;
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-			MSDOS_I(inode)->i_last_dclus = 0;
-			MSDOS_I(inode)->i_new = 0;
-			MSDOS_I(inode)->i_new_dclus = 0;
-#endif
-		}
-	} else {
-		MSDOS_I(inode)->mmu_private = size;
-		i_size_write(inode, size);
-		inode->i_ctime = inode->i_mtime = CURRENT_TIME_SEC;
-		mark_inode_dirty(inode);
-	}
-
-	return err;
-}
-#endif
 
 static int fat_ioctl_get_attributes(struct inode *inode, u32 __user *user_attr)
 {
@@ -296,58 +126,12 @@ long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	u32 __user *user_attr = (u32 __user *)arg;
 
 	switch (cmd) {
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-	case FAT_IOCTL_CLOSE_NOSYNC:
-	{
-		filp->f_op = &fat_file_operations_nosync;
-		return 0;
-	}
-#endif
 	case FAT_IOCTL_GET_ATTRIBUTES:
 		return fat_ioctl_get_attributes(inode, user_attr);
 	case FAT_IOCTL_SET_ATTRIBUTES:
 		return fat_ioctl_set_attributes(filp, user_attr);
 	case FAT_IOCTL_GET_VOLUME_ID:
 		return fat_ioctl_get_volume_id(inode, user_attr);
-#ifdef CONFIG_SNSC_FS_FAT_IOCTL_EXPAND_SIZE
-	case FAT_IOCTL_EXPAND_SIZE:
-	{
-		int err;
-		u32 size;
-
-		if (!(filp->f_mode & FMODE_WRITE))
-			return -EBADF;
-		err = get_user(size, user_attr);
-		if (err)
-			return err;
-
-		if (S_ISDIR(inode->i_mode) || (i_size_read(inode) != 0))
-			return -EINVAL;
-
-		mutex_lock(&inode->i_mutex);
-		err = fat_expand_size(inode, size);
-		mutex_unlock(&inode->i_mutex);
-		return err;
-	}
-#endif
-#ifdef CONFIG_SNSC_FS_FAT_IOCTL_CONCAT_DIRTY_PAGES
-	case FAT_IOCTL_CONCAT_DIRTY_PAGES:
-	{
-		int err;
-
-		if (!(filp->f_mode & FMODE_WRITE))
-			return -EBADF;
-		if (S_ISDIR(inode->i_mode))
-			return -EINVAL;
-		if (i_size_read(inode) == 0)
-			return 0;
-
-		mutex_lock(&inode->i_mutex);
-		err = fat_concat_dirty_pages(inode, filp);
-		mutex_unlock(&inode->i_mutex);
-		return err;
-	}
-#endif
 	default:
 		return -ENOTTY;	/* Inappropriate ioctl for device */
 	}
@@ -362,141 +146,35 @@ static long fat_generic_compat_ioctl(struct file *filp, unsigned int cmd,
 }
 #endif
 
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-static int fat_clean_inode(struct inode *inode)
-{
-	int ret = 0;
-
-	if (!(inode->i_state & I_DIRTY))
-		return 0;
-
-	ret = fat_sync_inode(inode);
-	if (!ret) {
-		pr_debug("Sync inode ok, make it clean!\n");
-		fat_mark_inode_clean(inode);
-	}
-
-	return ret;
-}
-#endif
-
 static int fat_file_release(struct inode *inode, struct file *filp)
 {
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-	struct msdos_sb_info *sbi = MSDOS_SB(filp->f_mapping->host->i_sb);
-	int ret = 0;
-#endif
 	if ((filp->f_mode & FMODE_WRITE) &&
-#ifdef CONFIG_SNSC_FS_FAT_FLUSH_NO_WAIT_AT_CLOSING_CLEAN_FILES
-	    (inode->i_state & I_DIRTY) &&
-#endif
 	     MSDOS_SB(inode->i_sb)->options.flush) {
 		fat_flush_inodes(inode->i_sb, inode, NULL);
 		congestion_wait(BLK_RW_ASYNC, HZ/10);
 	}
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-	if (sbi->options.batch_sync) {
-		mutex_lock(&inode->i_mutex);
-		ret = fat_clean_inode(inode);
-		mutex_unlock(&inode->i_mutex);
-	}
-	return ret;
-#else
-	return 0;
-#endif
-}
-
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-static int fat_file_release_nosync(struct inode *inode, struct file *filp)
-{
-	if ((filp->f_mode & FMODE_WRITE) &&
-#ifdef CONFIG_SNSC_FS_FAT_FLUSH_NO_WAIT_AT_CLOSING_CLEAN_FILES
-		(inode->i_state & I_DIRTY) &&
-#endif
-		MSDOS_SB(inode->i_sb)->options.flush) {
-		fat_flush_inodes(inode->i_sb, inode, NULL);
-		congestion_wait(BLK_RW_SYNC, HZ/10);
-	}
 	return 0;
 }
-#endif
-
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-static ssize_t fat_sync_read(struct file *filp, char __user *buf, size_t len,
-			     loff_t *ppos)
-{
-	struct inode *inode = filp->f_mapping->host;
-	if (fat_check_disk(inode->i_sb, 1))
-		return -EIO;
-	return new_sync_read(filp, buf, len, ppos);
-}
-#endif
-
-#if defined(CONFIG_SNSC_FS_FAT_BATCH_SYNC) || defined(CONFIG_SNSC_FS_VFAT_CHECK_DISK)
-static ssize_t fat_sync_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos)
-{
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-	struct inode *inode = filp->f_mapping->host;
-#endif
-	ssize_t ret;
-
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-	if (fat_check_disk(inode->i_sb, 1))
-		return -EIO;
-#endif
-	ret = new_sync_write(filp, buf, len, ppos);
-
-	return ret;
-}
-#endif
 
 int fat_file_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = filp->f_mapping->host;
 	int res, err;
 
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-	if (fat_check_disk(inode->i_sb, 1))
-		return -EIO;
-#endif
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-	if (MSDOS_SB(inode->i_sb)->options.batch_sync) {
-		res = fat_clean_inode(inode);
-		err = 0;
-	} else {
-		res = generic_file_fsync(filp, start, end, datasync);
-		err = sync_mapping_buffers(MSDOS_SB(inode->i_sb)->fat_inode->i_mapping);
-	}
-#else
 	res = generic_file_fsync(filp, start, end, datasync);
 	err = sync_mapping_buffers(MSDOS_SB(inode->i_sb)->fat_inode->i_mapping);
-#endif
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-	if (res == 0 && err == 0 && fat_check_disk(inode->i_sb, 1))
-		return -EIO;
-#endif
+
 	return res ? res : err;
 }
 
 
 const struct file_operations fat_file_operations = {
 	.llseek		= generic_file_llseek,
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-	.read           = fat_sync_read,
-#else
 	.read		= new_sync_read,
-#endif
-#if defined(CONFIG_SNSC_FS_FAT_BATCH_SYNC) || defined(CONFIG_SNSC_FS_VFAT_CHECK_DISK)
-	.write          = fat_sync_write,
-#else
 	.write		= new_sync_write,
-#endif
 	.read_iter	= generic_file_read_iter,
 	.write_iter	= generic_file_write_iter,
 	.mmap		= generic_file_mmap,
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-	.open           = generic_file_open,
-#endif
 	.release	= fat_file_release,
 	.unlocked_ioctl	= fat_generic_ioctl,
 #ifdef CONFIG_COMPAT
@@ -505,24 +183,6 @@ const struct file_operations fat_file_operations = {
 	.fsync		= fat_file_fsync,
 	.splice_read	= generic_file_splice_read,
 };
-
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-const struct file_operations fat_file_operations_nosync = {
-	.llseek		= generic_file_llseek,
-	.read		= new_sync_read,
-	.write		= fat_sync_write,
-	.read_iter	= generic_file_read_iter,
-	.write_iter	= generic_file_write_iter,
-	.mmap		= generic_file_mmap,
-	.open           = generic_file_open,
-	.release	= fat_file_release_nosync,
-	.unlocked_ioctl	= fat_generic_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl	= fat_generic_compat_ioctl,
-#endif
-	.fsync		= fat_file_fsync,
-};
-#endif
 
 static int fat_cont_expand(struct inode *inode, loff_t size)
 {
@@ -571,11 +231,7 @@ static int fat_free(struct inode *inode, int skip)
 
 	fat_cache_inval_inode(inode);
 
-#ifdef CONFIG_SNSC_FS_FAT_BATCH_SYNC
-	wait = IS_DIRSYNC(inode) || MSDOS_SB(sb)->options.batch_sync;
-#else
 	wait = IS_DIRSYNC(inode);
-#endif
 	i_start = free_start = MSDOS_I(inode)->i_start;
 	i_logstart = MSDOS_I(inode)->i_logstart;
 
@@ -730,18 +386,6 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 	struct inode *inode = dentry->d_inode;
 	unsigned int ia_valid;
 	int error;
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-	int px_uid = sbi->options.fs_uid.val ? sbi->options.fs_uid.val :
-		     CONFIG_SNSC_FS_VFAT_POSIX_ATTR_DEFAULT_UID_VALUE;
-	int px_gid = sbi->options.fs_gid.val ? sbi->options.fs_gid.val :
-		     CONFIG_SNSC_FS_VFAT_POSIX_ATTR_DEFAULT_UID_VALUE;
- 	int need_size_change = 0;
-#endif
-
-#ifdef CONFIG_SNSC_FS_VFAT_CHECK_DISK
-	if (fat_check_disk(inode->i_sb, 0))
-		return -EIO;
-#endif
 
 	/* Check for setting the inode time. */
 	ia_valid = attr->ia_valid;
@@ -750,46 +394,12 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 			attr->ia_valid &= ~TIMES_SET_FLAGS;
 	}
 
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-	if (sbi->options.posix_attr) {
-		if (attr->ia_valid & ATTR_UID) {
-			/* root can change uid to any value */
-			if (capable(CAP_CHOWN) &&
-			    (attr->ia_uid.val && attr->ia_uid.val != px_uid))
-				attr->ia_uid.val = px_uid;
-			/* change-uid affects gid */
-			attr->ia_valid |= ATTR_GID;
-			attr->ia_gid.val = attr->ia_uid.val ? px_gid : 0;
-		} else {
-			/* chown syscall sets both uid and gid */
-			if (attr->ia_valid & ATTR_GID) {
-				/* root can change gid to any value */
-				if (capable(CAP_CHOWN) &&
-				    (attr->ia_gid.val && attr->ia_gid.val != px_gid))
-					attr->ia_gid.val = px_gid;
-				/* change-gid affects uid */
-				attr->ia_valid |= ATTR_UID;
-				attr->ia_uid.val = attr->ia_gid.val ? px_uid : 0;
-			}
-		}
-		/* change-group-mode affects on others-mode */
-		if (attr->ia_valid & ATTR_MODE) {
-			int others_mode = (attr->ia_mode & S_IRWXG) >> 3;
-			attr->ia_mode &=  ~S_IRWXO;
-			attr->ia_mode |=  others_mode;
-		}
-	}
-#endif
 	error = inode_change_ok(inode, attr);
 	attr->ia_valid = ia_valid;
 	if (error) {
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-		goto error_out;
-#else
 		if (sbi->options.quiet)
 			error = 0;
 		goto out;
-#endif
 	}
 
 	/*
@@ -809,18 +419,6 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 		}
 	}
 
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-	if (sbi->options.posix_attr) {
-		if (((attr->ia_valid & ATTR_UID) &&
-		       ((attr->ia_uid.val) && (attr->ia_uid.val != px_uid))) ||
-		    ((attr->ia_valid & ATTR_GID) &&
-		       ((attr->ia_gid.val) && (attr->ia_gid.val != px_gid))) ||
-		    ((attr->ia_valid & ATTR_MODE) &&
-		     (attr->ia_mode & ~VFAT_POSIX_ATTR_VALID_MODE)))
-			error = -EPERM;
-	}
-	else
-#endif
 	if (((attr->ia_valid & ATTR_UID) &&
 	     (!uid_eq(attr->ia_uid, sbi->options.fs_uid))) ||
 	    ((attr->ia_valid & ATTR_GID) &&
@@ -829,53 +427,6 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 	     (attr->ia_mode & ~FAT_VALID_MODE)))
 		error = -EPERM;
 
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-	if (error)
-		goto error_out;
-
-	if (attr->ia_valid & ATTR_SIZE) {
-		/*
-		 * Update i_size here, not in inode_setattr(),
-		 * because inode_setattr() calls vmtruncate() and
-		 * fat_truncate() consequently. This may release
-		 * cluster chain, before updating size field of
-		 * the dir entry on disk.
-		 */
-		if (IS_SWAPFILE(inode)){
-			error = -ETXTBSY;
-			goto out;
-		}
-		attr->ia_valid &= ~(ATTR_SIZE);
-		if (attr->ia_size == inode->i_size) {
-			attr->ia_valid |= ATTR_MTIME|ATTR_CTIME;
-		} else {
-			need_size_change = 1;
-			i_size_write(inode, attr->ia_size);
-		}
-	}
-
-	if (!sbi->options.posix_attr) {
-		if (attr->ia_valid & ATTR_MODE) {
-			if (fat_sanitize_mode(sbi, inode, &attr->ia_mode) < 0)
-				attr->ia_valid &= ~ATTR_MODE;
-		}
-	}
-
-	/*
-	 * Here, no error returns from inode_setattr().
-	 * Because ATTR_SIZE is cleared before calling it.
-	 */
-	setattr_copy(inode, attr);
-	mark_inode_dirty(inode);
-
-	if (need_size_change) {
-		/* inode is already marked dirty in inode_setattr() */
-		if (IS_SYNC(inode))
-			generic_osync_inode_only(inode);
-		truncate_setsize(inode, inode->i_size);
-		fat_truncate_blocks(inode, attr->ia_size);
-	}
-#else
 	if (error) {
 		if (sbi->options.quiet)
 			error = 0;
@@ -900,15 +451,8 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 
 	setattr_copy(inode, attr);
 	mark_inode_dirty(inode);
-#endif
 out:
 	return error;
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-error_out:
-	if (sbi->options.quiet)
-		error = 0;
-	return error;
-#endif
 }
 EXPORT_SYMBOL_GPL(fat_setattr);
 
@@ -916,12 +460,3 @@ const struct inode_operations fat_file_inode_operations = {
 	.setattr	= fat_setattr,
 	.getattr	= fat_getattr,
 };
-#ifdef CONFIG_SNSC_FS_VFAT_POSIX_ATTR
-struct inode_operations fat_symlink_inode_operations = {
-       .readlink       = page_readlink,
-       .follow_link    = page_follow_link_light,
-       .setattr        = fat_setattr,
-};
-
-EXPORT_SYMBOL(fat_symlink_inode_operations);
-#endif

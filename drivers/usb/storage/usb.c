@@ -1,4 +1,3 @@
-/* 2017-05-25: File changed by Sony Corporation */
 /* Driver for USB Mass Storage compliant devices
  *
  * Current development and maintenance by:
@@ -1120,33 +1119,4 @@ static struct usb_driver usb_storage_driver = {
 	.soft_unbind =	1,
 };
 
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS_USB
-static int usb_storage_driver_init(void)
-{
-        int retval;
-
-        pr_info("Initializing USB Mass Storage driver...\n");
-
-        /* register the driver, return usb_register return code if error */
-        retval = usb_register(&usb_storage_driver);
-        return retval;
-}
-
-static void usb_storage_driver_exit(void)
-{
-        /* Deregister the driver
-         * This will cause disconnect() to be called for each
-         * attached unit
-         */
-        usb_deregister(&usb_storage_driver);
-}
-deferred_initcall(usb_storage_driver_init,
-                  CONFIG_SNSC_DEFERRED_INITCALLS_GROUP_USB_STORAGE);
-#else
 module_usb_driver(usb_storage_driver);
-#endif
-
-#ifdef CONFIG_SNSC_DEFERRED_INITCALLS_USB
-module_exit(usb_storage_driver_exit);
-#endif
-

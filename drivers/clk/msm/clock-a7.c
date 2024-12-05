@@ -221,6 +221,7 @@ static int of_get_fmax_vdd_class(struct platform_device *pdev, struct clk *c,
 	devm_kfree(&pdev->dev, array);
 	vdd->num_levels = prop_len;
 	vdd->cur_level = prop_len;
+	vdd->use_max_uV = true;
 	c->num_fmax = prop_len;
 	return 0;
 }
@@ -476,7 +477,7 @@ static struct of_device_id clock_a7_match_table[] = {
 	{.compatible = "qcom,clock-a53-8916"},
 	{.compatible = "qcom,clock-a7-9650"},
 	{.compatible = "qcom,clock-a7-mdm9607"},
-	{.compatible = "qcom,clock-a7-sdxhedgehog"},
+	{.compatible = "qcom,clock-a7-sdx20"},
 	{}
 };
 

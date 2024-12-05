@@ -558,26 +558,6 @@ config TOUCHSCREEN_MIGOR
 	  To compile this driver as a module, choose M here: the
 	  module will be called migor_ts.
 
-config TOUCHSCREEN_CLEARPAD
-	tristate "Synaptics ClearPad"
-	default n
-	help
-		Say Y here to enable Synaptics ClearPad touchscreen.
-
-config TOUCHSCREEN_CLEARPAD_I2C
-	tristate "Synaptics ClearPad I2C"
-	depends on I2C && TOUCHSCREEN_CLEARPAD
-	default n
-	help
-		Say Y here to enable Synaptics ClearPad I2C touchscreen.
-
-config TOUCHSCREEN_CLEARPAD_RMI_DEV
-	tristate "Synaptics ClearPad RMI Dev"
-	depends on GPIO_SYSFS && TOUCHSCREEN_CLEARPAD && TOUCHSCREEN_CLEARPAD_I2C
-	default n
-	help
-		Say Y here to enable Synaptics ClearPad RMI dev.
-
 config TOUCHSCREEN_TOUCHRIGHT
 	tristate "Touchright serial touchscreen"
 	select SERIO
@@ -1015,6 +995,16 @@ config TOUCHSCREEN_FT5X06_GESTURE
 
          If unsure, say N.
 
+config TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
+	bool "Synaptics DSX firmware update extra sysfs attributes"
+	depends on TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE
+	help
+	  Say Y here to enable support for extra sysfs attributes
+	  supporting firmware update in a development environment.
+	  This does not affect the core or other subsystem attributes.
+
+	  If unsure, say N.
+
 config SECURE_TOUCH
 	bool "Secure Touch"
 	depends on (TOUCHSCREEN_SYNAPTICS_I2C_RMI4 || \
@@ -1022,6 +1012,16 @@ config SECURE_TOUCH
 	  TOUCHSCREEN_ATMEL_MAXTOUCH_TS)
 	help
 	  Say Y here to enable Secure Touch in supported drivers.
+
+	  If unsure, say N.
+
+config TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE_EXTRA_SYSFS
+	bool "Synaptics DSX firmware update extra sysfs attributes"
+	depends on TOUCHSCREEN_SYNAPTICS_DSX_FW_UPDATE
+	help
+	  Say Y here to enable support for extra sysfs attributes
+	  supporting firmware update in a development environment.
+	  This does not affect the core or other subsystem attributes.
 
 	  If unsure, say N.
 
@@ -1136,5 +1136,17 @@ config TOUCHSCREEN_MAXIM_STI
 	  module will be called maxim_sti.
 
 source "drivers/input/touchscreen/gt9xx/Kconfig"
+
+config TOUCHSCREEN_HIMAX_CHIPSET
+	bool "Himax touchpanel CHIPSET"
+	depends on I2C
+	help
+	  Say Y here if you have a Himax CHIPSET touchscreen.
+	  HIMAX controllers are multi touch controllers which can
+	  report 10 touches at a time.
+
+          If unsure, say N.
+
+source "drivers/input/touchscreen/hxchipset/Kconfig"
 
 endif

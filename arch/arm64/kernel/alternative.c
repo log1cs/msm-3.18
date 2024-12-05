@@ -25,21 +25,31 @@
 #include <asm/alternative.h>
 #include <asm/cpufeature.h>
 #include <asm/insn.h>
-#include <asm/sections.h>
 #include <linux/stop_machine.h>
+
+#define __ALT_PTR(a,f)		(u32 *)((void *)&(a)->f + (a)->f)
+#define ALT_ORIG_PTR(a)		__ALT_PTR(a, orig_offset)
+#define ALT_REPL_PTR(a)		__ALT_PTR(a, alt_offset)
+
+extern struct alt_instr __alt_instructions[], __alt_instructions_end[];
 
 struct alt_region {
 	struct alt_instr *begin;
 	struct alt_instr *end;
 };
 
+/*
+ * Check if the target PC is within an alternative block.
+ */
+
 static void __apply_alternatives(void *alt_region)
 {
 	struct alt_instr *alt;
-	struct alt_region *region = alt_region;
 	u32 *origptr, *replptr, *endptr;
+	struct alt_region *region = alt_region;
 
 	for (alt = region->begin; alt < region->end; alt++) {
+
 		if (!cpus_have_cap(alt->cpufeature))
 			continue;
 
@@ -63,8 +73,8 @@ static int __apply_alternatives_multi_stop(void *unused)
 {
 	static int patched = 0;
 	struct alt_region region = {
-		.begin	= (struct alt_instr *)__alt_instructions,
-		.end	= (struct alt_instr *)__alt_instructions_end,
+		.begin	= __alt_instructions,
+		.end	= __alt_instructions_end,
 	};
 
 	/* We always have a CPU 0 at this point (__init) */

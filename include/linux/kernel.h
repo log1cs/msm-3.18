@@ -1,4 +1,3 @@
-/* 2016-04-12: File changed by Sony Corporation */
 #ifndef _LINUX_KERNEL_H
 #define _LINUX_KERNEL_H
 
@@ -552,7 +551,6 @@ void tracing_snapshot_alloc(void);
 extern void tracing_start(void);
 extern void tracing_stop(void);
 
-#ifdef CONFIG_TRACE_PRINTK
 static inline __printf(1, 2)
 void ____trace_printk_check_format(const char *fmt, ...)
 {
@@ -621,20 +619,6 @@ int __trace_bprintk(unsigned long ip, const char *fmt, ...);
 
 extern __printf(2, 3)
 int __trace_printk(unsigned long ip, const char *fmt, ...);
-
-#else
-static inline __printf(1, 2)
-int trace_printk(const char *fmt, ...)
-{
-	return 0;
-}
-
-static inline int
-ftrace_vprintk(const char *fmt, va_list ap)
-{
-	return 0;
-}
-#endif /* CONFIG_TRACE_PRINTK */
 
 /**
  * trace_puts - write a string into the ftrace buffer
@@ -842,8 +826,4 @@ static inline void ftrace_dump(enum ftrace_dump_mode oops_dump_mode) { }
 	 /* Other writable?  Generally considered a bad idea. */	\
 	 BUILD_BUG_ON_ZERO((perms) & 2) +				\
 	 (perms))
-
-/* To identify board information in panic logs, set this */
-extern char *mach_panic_string;
-
 #endif

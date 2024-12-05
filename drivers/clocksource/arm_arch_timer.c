@@ -1,4 +1,3 @@
-/* 2017-05-08: File changed by Sony Corporation */
 /*
  *  linux/drivers/clocksource/arm_arch_timer.c
  *
@@ -335,14 +334,19 @@ static void arch_counter_set_user_access(void)
 {
 	u32 cntkctl = arch_timer_get_cntkctl();
 
-	/* Disable user access to the timers */
+	/* Disable user access to the timers and the physical counter */
 	/* Also disable virtual event stream */
 	cntkctl &= ~(ARCH_TIMER_USR_PT_ACCESS_EN
-			| ARCH_TIMER_VIRT_EVT_EN);
+			| ARCH_TIMER_VIRT_EVT_EN
+			| ARCH_TIMER_USR_PCT_ACCESS_EN);
 
-	/* Enable user access to the virtual and physical counters */
-	cntkctl |= ARCH_TIMER_USR_VCT_ACCESS_EN | ARCH_TIMER_USR_PCT_ACCESS_EN
-			| ARCH_TIMER_USR_VT_ACCESS_EN;
+	/* Enable user access to the virtual counter */
+	cntkctl |= ARCH_TIMER_USR_VT_ACCESS_EN;
+
+	if (IS_ENABLED(CONFIG_ARM_ARCH_TIMER_VCT_ACCESS))
+		cntkctl |= ARCH_TIMER_USR_VCT_ACCESS_EN;
+	else
+		cntkctl &= ~ARCH_TIMER_USR_VCT_ACCESS_EN;
 
 	arch_timer_set_cntkctl(cntkctl);
 }
@@ -385,16 +389,6 @@ arch_timer_detect_rate(void __iomem *cntbase, struct device_node *np)
 	/* Check the timer frequency. */
 	if (arch_timer_rate == 0)
 		pr_warn("Architected timer frequency not available\n");
-}
-
-unsigned long long notrace snsc_raw_clock(void)
-{
-	return arch_timer_read_counter();
-}
-
-unsigned long long notrace snsc_raw_clock_get_res(void)
-{
-       return NSEC_PER_SEC / arch_timer_rate;
 }
 
 static void arch_timer_banner(unsigned type)

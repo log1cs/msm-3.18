@@ -1,4 +1,3 @@
-/* 2017-05-08: File changed by Sony Corporation */
 /*
  *  Copyright (C) 1995  Linus Torvalds
  *
@@ -69,7 +68,6 @@
 #include <linux/percpu.h>
 #include <linux/crash_dump.h>
 #include <linux/tboot.h>
-#include <linux/snsc_boot_time.h>
 #include <linux/jiffies.h>
 
 #include <video/edid.h>
@@ -1178,11 +1176,6 @@ void __init setup_arch(char **cmdline_p)
 	x86_init.paging.pagetable_init();
 
 	kasan_init();
-
-#ifdef CONFIG_SNSC_BOOT_TIME
-	boot_time_init();
-	BOOT_TIME_ADD();
-#endif
 
 	if (boot_cpu_data.cpuid_level >= 0) {
 		/* A CPU has %cr4 if and only if it has CPUID */

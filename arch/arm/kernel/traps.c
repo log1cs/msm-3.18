@@ -1,4 +1,3 @@
-/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  linux/arch/arm/kernel/traps.c
  *
@@ -26,7 +25,6 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/sched.h>
-#include <linux/exception_monitor.h>
 #include <linux/irq.h>
 #include <linux/bug.h>
 
@@ -69,41 +67,15 @@ static void dump_mem(const char *, const char *, unsigned long, unsigned long);
 
 void dump_backtrace_entry(unsigned long where, unsigned long from, unsigned long frame)
 {
-	struct pt_regs *regs;
 #ifdef CONFIG_KALLSYMS
 	printk("[<%08lx>] (%ps) from [<%08lx>] (%pS)\n", where, (void *)where, from, (void *)from);
 #else
 	printk("Function entered at [<%08lx>] from [<%08lx>]\n", where, from);
 #endif
 
-	if (in_exception_text(where)) {
+	if (in_exception_text(where))
 		dump_mem("", "Exception stack", frame + 4, frame + 4 + sizeof(struct pt_regs));
-
-		regs = (struct pt_regs *)(frame + 4);
-		printk(
-			"\na1: r0: 0x%08lx  a2: r1: 0x%08lx  a3: r2: 0x%08lx  a4: r3: 0x%08lx\n",
-			regs->ARM_r0, regs->ARM_r1,
-			regs->ARM_r2, regs->ARM_r3);
-		printk(
-			"v1: r4: 0x%08lx  v2: r5: 0x%08lx  v3: r6: 0x%08lx  v4: r7: 0x%08lx\n",
-			regs->ARM_r4, regs->ARM_r5,
-			regs->ARM_r6, regs->ARM_r7);
-		printk(
-			"v5: r8: 0x%08lx  v6: r9: 0x%08lx  v7:r10: 0x%08lx  fp:r11: 0x%08lx\n",
-			regs->ARM_r8, regs->ARM_r9,
-			regs->ARM_r10, regs->ARM_fp);
-		printk(
-			"ip:r12: 0x%08lx  sp:r13: 0x%08lx  lr:r14: 0x%08lx  pc:r15: 0x%08lx\n",
-			regs->ARM_ip, regs->ARM_sp,
-			regs->ARM_lr, regs->ARM_pc);
-		printk("cpsr:r16: 0x%08lx\n", regs->ARM_cpsr);
-	}
 }
-
-extern char __exception_text_start[];
-extern char __exception_text_end[];
-EXPORT_SYMBOL_GPL(__exception_text_start);
-EXPORT_SYMBOL_GPL(__exception_text_end);
 
 #ifndef CONFIG_ARM_UNWIND
 /*
@@ -163,26 +135,30 @@ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
 	set_fs(fs);
 }
 
-static void __dump_instr(const char *lvl, struct pt_regs *regs)
+static void dump_instr(const char *lvl, struct pt_regs *regs)
 {
 	unsigned long addr = instruction_pointer(regs);
 	const int thumb = thumb_mode(regs);
 	const int width = thumb ? 4 : 8;
+	mm_segment_t fs;
 	char str[sizeof("00000000 ") * 5 + 2 + 1], *p = str;
 	int i;
 
 	/*
-	 * Note that we now dump the code first, just in case the backtrace
-	 * kills us.
+	 * We need to switch to kernel mode so that we can use __get_user
+	 * to safely read from kernel space.  Note that we now dump the
+	 * code first, just in case the backtrace kills us.
 	 */
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 
 	for (i = -4; i < 1 + !!thumb; i++) {
 		unsigned int val, bad;
 
 		if (thumb)
-			bad = get_user(val, &((u16 *)addr)[i]);
+			bad = __get_user(val, &((u16 *)addr)[i]);
 		else
-			bad = get_user(val, &((u32 *)addr)[i]);
+			bad = __get_user(val, &((u32 *)addr)[i]);
 
 		if (!bad)
 			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
@@ -193,20 +169,8 @@ static void __dump_instr(const char *lvl, struct pt_regs *regs)
 		}
 	}
 	printk("%sCode: %s\n", lvl, str);
-}
 
-static void dump_instr(const char *lvl, struct pt_regs *regs)
-{
-	mm_segment_t fs;
-
-	if (!user_mode(regs)) {
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		__dump_instr(lvl, regs);
-		set_fs(fs);
-	} else {
-		__dump_instr(lvl, regs);
-	}
+	set_fs(fs);
 }
 
 #ifdef CONFIG_ARM_UNWIND
@@ -298,7 +262,6 @@ static int __die(const char *str, int err, struct pt_regs *regs)
 		dump_backtrace(regs, tsk);
 		dump_instr(KERN_EMERG, regs);
 	}
-	em_show(regs);
 
 	return 0;
 }
@@ -345,18 +308,10 @@ static void oops_end(unsigned long flags, struct pt_regs *regs, int signr)
 	raw_local_irq_restore(flags);
 	oops_exit();
 
-	if (in_interrupt()) {
-#ifdef CONFIG_EXCEPTION_MONITOR_ON_PANIC
-		em_panic_from_die = 1;
-#endif
+	if (in_interrupt())
 		panic("Fatal exception in interrupt");
-	}
-	if (panic_on_oops) {
-#ifdef CONFIG_EXCEPTION_MONITOR_ON_PANIC
-		em_panic_from_die = 1;
-#endif
+	if (panic_on_oops)
 		panic("Fatal exception");
-	}
 	if (signr)
 		do_exit(signr);
 }
@@ -413,30 +368,6 @@ int is_valid_bugaddr(unsigned long pc)
 }
 
 #endif
-
-#ifdef CONFIG_EXCEPTION_MONITOR
-int em_show_here(void)
-{
-	struct pt_regs regs;
-	unsigned long flags;
-	int ret;
-	register unsigned long current_sp asm ("sp");
-
-	memset(&regs, 0, sizeof(regs));
-	regs.ARM_fp = (unsigned long)__builtin_frame_address(0);
-	regs.ARM_sp = current_sp;
-	regs.ARM_lr = (unsigned long)__builtin_return_address(0);
-	regs.ARM_pc = (unsigned long)em_show_here;
-
-	/* To tell EM that this is a kernel-mode invocation. */
-	local_irq_save(flags);
-	ret = em_show(&regs);
-	local_irq_restore(flags);
-	return ret;
-}
-EXPORT_SYMBOL(em_show_here);
-#endif
-
 
 static LIST_HEAD(undef_hook);
 static DEFINE_RAW_SPINLOCK(undef_lock);

@@ -1,4 +1,3 @@
-/* 2017-09-07: File changed by Sony Corporation */
 /*
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  * Debug helper to dump the current kernel pagetables of the system
@@ -321,12 +320,10 @@ static int ptdump_init(void)
 			for (j = 0; j < pg_level[i].num; j++)
 				pg_level[i].mask |= pg_level[i].bits[j].mask;
 
-#ifdef CONFIG_SPARSEMEM_VMEMMAP
 	address_markers[VMEMMAP_START_NR].start_address =
 				(unsigned long)virt_to_page(PAGE_OFFSET);
 	address_markers[VMEMMAP_END_NR].start_address =
 				(unsigned long)virt_to_page(high_memory);
-#endif
 
 	pe = debugfs_create_file("kernel_page_tables", 0400, NULL, NULL,
 				 &ptdump_fops);

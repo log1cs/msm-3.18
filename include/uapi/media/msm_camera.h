@@ -1,4 +1,3 @@
-/* 2017-02-17: File changed by Sony Corporation */
 /* Copyright (c) 2009-2012, 2014-2016 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -1716,7 +1715,6 @@ enum msm_actuator_write_type {
 	MSM_ACTUATOR_WRITE_DIR_REG,
 	MSM_ACTUATOR_POLL,
 	MSM_ACTUATOR_READ_WRITE,
-	MSM_ACTUATOR_WRITE_DAC_MSB,
 };
 
 struct msm_actuator_reg_params_t {

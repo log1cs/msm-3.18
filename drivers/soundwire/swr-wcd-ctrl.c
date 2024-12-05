@@ -1,4 +1,3 @@
-/* 2018-10-30: File changed by Sony Corporation */
 /* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,10 +28,6 @@
 #include <linux/uaccess.h>
 #include "swrm_registers.h"
 #include "swr-wcd-ctrl.h"
-#ifdef CONFIG_SNSC_SW_BUS_CLASH_DETECT
-#include <linux/wait.h>
-#include <linux/poll.h>
-#endif
 
 #define SWR_BROADCAST_CMD_ID            0x0F
 #define SWR_AUTO_SUSPEND_DELAY          3 /* delay in sec */
@@ -50,12 +45,6 @@ static u8 mstr_ports[] = {100, 101, 102, 103, 104, 105, 106, 107};
 static u8 mstr_port_type[] = {SWR_DAC_PORT, SWR_COMP_PORT, SWR_BOOST_PORT,
 			      SWR_DAC_PORT, SWR_COMP_PORT, SWR_BOOST_PORT,
 			      SWR_VISENSE_PORT, SWR_VISENSE_PORT};
-
-#ifdef CONFIG_SNSC_SW_BUS_CLASH_DETECT
-static bool bus_clash = false;
-static DECLARE_WAIT_QUEUE_HEAD(sw_wait);
-static DEFINE_MUTEX(bus_clash_mutex);
-#endif
 
 struct usecase uc[] = {
 	{0, 0, 0},		/* UC0: no ports */
@@ -76,8 +65,6 @@ struct usecase uc[] = {
 	{6, 10, 7800},		/* UC15: 2*(Spkr + SB + VI) */
 	{2, 3, 3600},		/* UC16: Spkr + VI */
 	{4, 6, 7200},		/* UC17: 2*(Spkr + VI) */
-	{3, 7, 4200},		/* UC18: Spkr + Comp + VI */
-	{6, 14, 8400},		/* UC19: 2*(Spkr + Comp + VI) */
 };
 #define MAX_USECASE	ARRAY_SIZE(uc)
 
@@ -192,21 +179,6 @@ struct port_params pp[MAX_USECASE][SWR_MSTR_PORT_LEN] = {
 		{7, 6, 0},
 		{15, 10, 0},
 	},
-	/* UC 18 */
-	{
-		{7, 1, 0},
-		{31, 2, 0},
-		{15, 7, 0},
-	},
-	/* UC 19 */
-	{
-		{7, 1, 0},
-		{31, 2, 0},
-		{15, 7, 0},
-		{7, 6, 0},
-		{31, 18, 0},
-		{15, 10, 0},
-	},
 };
 
 enum {
@@ -233,9 +205,6 @@ static struct dentry *debugfs_swrm_dent;
 static struct dentry *debugfs_peek;
 static struct dentry *debugfs_poke;
 static struct dentry *debugfs_reg_dump;
-#ifdef CONFIG_SNSC_SW_BUS_CLASH_DETECT
-static struct dentry *debugfs_sw_bus_clash;
-#endif
 static unsigned int read_data;
 
 static int swrm_debug_open(struct inode *inode, struct file *file)
@@ -375,36 +344,6 @@ static const struct file_operations swrm_debug_ops = {
 	.read = swrm_debug_read,
 };
 
-#ifdef CONFIG_SNSC_SW_BUS_CLASH_DETECT
-static int sw_op_open(struct inode *inode, struct file *file)
-{
-       return 0;
-}
-
-static unsigned int sw_op_poll(struct file *file, poll_table *wait)
-{
-	int ret = 0;
-
-	poll_wait(file, &sw_wait, wait);
-
-	mutex_lock(&bus_clash_mutex);
-	if (bus_clash) {
-		printk(KERN_ERR "Bus clash occurred\n");
-		bus_clash = false;
-		ret = POLLIN | POLLRDNORM;
-	}
-	mutex_unlock(&bus_clash_mutex);
-
-	return  ret;
-}
-
-struct file_operations snsc_sw_fops = {
-	.open		 = sw_op_open,
-	.read    	 = seq_read,
-	.poll    	 = sw_op_poll,
-};
-#endif
-
 static int swrm_set_ch_map(struct swr_mstr_ctrl *swrm, void *data)
 {
 	struct swr_mstr_port *pinfo = (struct swr_mstr_port *)data;
@@ -434,17 +373,11 @@ static int swrm_clk_request(struct swr_mstr_ctrl *swrm, bool enable)
 		return -EINVAL;
 
 	if (enable) {
-		swrm->clk_ref_count++;
-		if (swrm->clk_ref_count == 1) {
-			swrm->clk(swrm->handle, true);
-			swrm->state = SWR_MSTR_UP;
-		}
-	} else if (--swrm->clk_ref_count == 0) {
+		swrm->clk(swrm->handle, true);
+		swrm->state = SWR_MSTR_UP;
+	} else {
 		swrm->clk(swrm->handle, false);
 		swrm->state = SWR_MSTR_DOWN;
-	} else if (swrm->clk_ref_count < 0) {
-		pr_err("%s: swrm clk count mismatch\n", __func__);
-		swrm->clk_ref_count = 0;
 	}
 	return 0;
 }
@@ -1203,10 +1136,7 @@ static irqreturn_t swr_mstr_interrupt(int irq, void *dev)
 	u8 devnum = 0;
 	int ret = IRQ_HANDLED;
 
-	mutex_lock(&swrm->reslock);
-	swrm_clk_request(swrm, true);
-	mutex_unlock(&swrm->reslock);
-
+	pm_runtime_get_sync(&swrm->pdev->dev);
 	intr_sts = swrm->read(swrm->handle, SWRM_INTERRUPT_STATUS);
 	intr_sts &= SWRM_INTERRUPT_STATUS_RMSK;
 	for (i = 0; i < SWRM_INTERRUPT_MAX; i++) {
@@ -1250,12 +1180,6 @@ static irqreturn_t swr_mstr_interrupt(int irq, void *dev)
 			break;
 		case SWRM_INTERRUPT_STATUS_MASTER_CLASH_DET:
 			dev_err_ratelimited(swrm->dev, "SWR bus clash detected\n");
-#ifdef CONFIG_SNSC_SW_BUS_CLASH_DETECT
-			mutex_lock(&bus_clash_mutex);
-			bus_clash = true;
-			mutex_unlock(&bus_clash_mutex);
-			wake_up(&sw_wait);
-#endif
 			break;
 		case SWRM_INTERRUPT_STATUS_RD_FIFO_OVERFLOW:
 			dev_dbg(swrm->dev, "SWR read FIFO overflow\n");
@@ -1300,10 +1224,8 @@ static irqreturn_t swr_mstr_interrupt(int irq, void *dev)
 			break;
 		}
 	}
-
-	mutex_lock(&swrm->reslock);
-	swrm_clk_request(swrm, false);
-	mutex_unlock(&swrm->reslock);
+	pm_runtime_mark_last_busy(&swrm->pdev->dev);
+	pm_runtime_put_autosuspend(&swrm->pdev->dev);
 	return ret;
 }
 
@@ -1494,7 +1416,6 @@ static int swrm_probe(struct platform_device *pdev)
 	swrm->wcmd_id = 0;
 	swrm->slave_status = 0;
 	swrm->num_rx_chs = 0;
-	swrm->clk_ref_count = 0;
 	swrm->state = SWR_MSTR_RESUME;
 	init_completion(&swrm->reset);
 	init_completion(&swrm->broadcast);
@@ -1558,12 +1479,6 @@ static int swrm_probe(struct platform_device *pdev)
 				   S_IFREG | S_IRUGO, debugfs_swrm_dent,
 				   (void *) "swrm_reg_dump",
 				   &swrm_debug_ops);
-#ifdef CONFIG_SNSC_SW_BUS_CLASH_DETECT
-		debugfs_sw_bus_clash = debugfs_create_file("swrm_bus_clash",
-				   S_IFREG | S_IRUGO, debugfs_swrm_dent,
-				   (void *) "swrm_bus_clash",
-				   &snsc_sw_fops);
-#endif
 	}
 	pm_runtime_set_autosuspend_delay(&pdev->dev, auto_suspend_timer);
 	pm_runtime_use_autosuspend(&pdev->dev);

@@ -1,5 +1,4 @@
 # Makefile for MHI driver
-ccflags-y += -Idrivers/platform/msm/mhi/
 obj-y += mhi_main.o
 obj-y += mhi_iface.o
 obj-y += mhi_init.o
