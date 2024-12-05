@@ -17,7 +17,6 @@
 #include "apq8017-no-pmi-cdp.dtsi"
 #include "apq8017-rome.dtsi"
 #include "apq8017-audio.dtsi"
-#include "apq8017-io-expander-cdp.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. APQ8017 CDP no-PMI \
@@ -37,17 +36,25 @@
 	};
 
 	usb_detect {
-		status = "ok";
+		compatible = "qcom,gpio-usbdetect";
+		interrupt-names = "vbus_det_irq";
+		interrupt-parent = <&tlmm>;
+		interrupts = <130 0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&vbus_low_as_host>;
+		qcom,gpio-mode-sel = <&tlmm 130 0>;
+		qcom,notify-host-mode;
 	};
 };
 
 &usb_otg {
+	qcom,vbus-low-as-hostmode;
 	vbus_otg-supply = <0>;
 };
 
-&i2c_4 {
-	usb2533@2c {
-		status = "ok";
+&i2c_2 {
+	pericom-type-c@1d {
+		status = "disabled";
 	};
 };
 
@@ -68,10 +75,6 @@
 					"pmx_adv7533_suspend";
 		pinctrl-0 = <&adv7533_int_active>;
 		pinctrl-1 = <&adv7533_int_suspend>;
-	};
-
-	pericom-type-c@1d {
-		status = "disabled";
 	};
 };
 
@@ -127,27 +130,3 @@
 };
 
 /delete-node/ &cont_splash_mem;
-
-&modem_mem {
-	reg = <0x0 0x86800000 0x0 0x1500000>;
-};
-
-&adsp_fw_mem {
-	reg = <0x0 0x87d00000 0x0 0x1100000>;
-};
-
-&wcnss_fw_mem {
-	reg = <0x0 0x88e00000 0x0 0x700000>;
-};
-
-&other_ext_mem {
-	reg = <0x0 0x84f00000 0x0 0x1900000>;
-};
-
-&qcom_seecom {
-	reg = <0x84f00000 0x1400000>;
-};
-
-&secure_mem {
-	status = "disabled";
-};
