@@ -611,12 +611,9 @@ int ping_getfrag(void *from, char *to,
 	if (offset == 0) {
 		if (fraglen < sizeof(struct icmphdr))
 			BUG();
-		if ((fraglen - sizeof(struct icmphdr)) &&
-		    csum_partial_copy_fromiovecend
-					(to + sizeof(struct icmphdr),
-					pfh->iov, 0,
-					fraglen - sizeof(struct icmphdr),
-					&pfh->wcheck))
+		if (csum_partial_copy_fromiovecend(to + sizeof(struct icmphdr),
+			    pfh->iov, 0, fraglen - sizeof(struct icmphdr),
+			    &pfh->wcheck))
 			return -EFAULT;
 	} else if (offset < sizeof(struct icmphdr)) {
 			BUG();
@@ -664,10 +661,6 @@ int ping_common_sendmsg(int family, struct msghdr *msg, size_t len,
 
 	if (len > 0xFFFF || len < icmph_len)
 		return -EMSGSIZE;
-
-	/* Must have at least a full ICMP header. */
-	if (len < icmph_len)
-		return -EINVAL;
 
 	/*
 	 *	Check the flags.
@@ -800,7 +793,7 @@ static int ping_v4_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *m
 	flowi4_init_output(&fl4, ipc.oif, sk->sk_mark, tos,
 			   RT_SCOPE_UNIVERSE, sk->sk_protocol,
 			   inet_sk_flowi_flags(sk), faddr, saddr, 0, 0,
-			   sk->sk_uid);
+			   sock_i_uid(sk));
 
 	security_sk_classify_flow(sk, flowi4_to_flowi(&fl4));
 	rt = ip_route_output_flow(net, &fl4, sk);

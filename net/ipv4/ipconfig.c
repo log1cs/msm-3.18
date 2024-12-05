@@ -1,3 +1,4 @@
+/* 2016-11-15: File changed by Sony Corporation */
 /*
  *  Automatic Configuration of IP -- use DHCP, BOOTP, RARP, or
  *  user-supplied information to configure own IP address and routes.
@@ -65,6 +66,8 @@
 #include <net/checksum.h>
 #include <asm/processor.h>
 
+#include <linux/snsc_boot_time.h>
+
 /* Define this to allow debugging output */
 #undef IPCONFIG_DEBUG
 
@@ -115,7 +118,7 @@
  */
 int ic_set_manually __initdata = 0;		/* IPconfig parameters set manually */
 
-static int ic_enable __initdata = 0;		/* IP config enabled? */
+static int ic_enable __initdata = 1;		/* IP config enabled? */
 
 /* Protocol choice */
 int ic_proto_enabled __initdata = 0
@@ -1536,7 +1539,7 @@ static int __init ip_auto_config(void)
 			pr_cont(", nameserver%u=%pI4", i, &ic_nameservers[i]);
 	pr_cont("\n");
 #endif /* !SILENT */
-
+	BOOT_TIME_ADD1("ip_auto_config() done");
 	return 0;
 }
 
