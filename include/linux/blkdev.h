@@ -1,3 +1,4 @@
+/* 2017-06-21: File changed by Sony Corporation */
 #ifndef _LINUX_BLKDEV_H
 #define _LINUX_BLKDEV_H
 
@@ -1454,6 +1455,13 @@ static inline uint64_t rq_start_time_ns(struct request *req)
 static inline uint64_t rq_io_start_time_ns(struct request *req)
 {
 	return 0;
+}
+#endif
+
+#ifdef CONFIG_SNSC_FS_FAT_RELAX_SYNC
+static inline int bdev_support_ordered(struct block_device *bdev)
+{
+	return ((bdev_get_queue(bdev))->flush_flags != 0);
 }
 #endif
 
