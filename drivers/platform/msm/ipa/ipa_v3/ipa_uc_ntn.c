@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -104,81 +104,49 @@ int ipa3_get_ntn_stats(struct Ipa3HwStatsNTNInfoData_t *stats)
 	IPA_ACTIVE_CLIENTS_INC_SIMPLE();
 
 	TX_STATS(num_pkts_processed);
-	TX_STATS(ring_stats.ringFull);
-	TX_STATS(ring_stats.ringEmpty);
-	TX_STATS(ring_stats.ringUsageHigh);
-	TX_STATS(ring_stats.ringUsageLow);
-	TX_STATS(ring_stats.RingUtilCount);
-	TX_STATS(gsi_stats.bamFifoFull);
-	TX_STATS(gsi_stats.bamFifoEmpty);
-	TX_STATS(gsi_stats.bamFifoUsageHigh);
-	TX_STATS(gsi_stats.bamFifoUsageLow);
-	TX_STATS(gsi_stats.bamUtilCount);
+	TX_STATS(tail_ptr_val);
+	TX_STATS(num_db_fired);
+	TX_STATS(tx_comp_ring_stats.ringFull);
+	TX_STATS(tx_comp_ring_stats.ringEmpty);
+	TX_STATS(tx_comp_ring_stats.ringUsageHigh);
+	TX_STATS(tx_comp_ring_stats.ringUsageLow);
+	TX_STATS(tx_comp_ring_stats.RingUtilCount);
+	TX_STATS(bam_stats.bamFifoFull);
+	TX_STATS(bam_stats.bamFifoEmpty);
+	TX_STATS(bam_stats.bamFifoUsageHigh);
+	TX_STATS(bam_stats.bamFifoUsageLow);
+	TX_STATS(bam_stats.bamUtilCount);
 	TX_STATS(num_db);
+	TX_STATS(num_unexpected_db);
+	TX_STATS(num_bam_int_handled);
+	TX_STATS(num_bam_int_in_non_running_state);
 	TX_STATS(num_qmb_int_handled);
-	TX_STATS(ipa_pipe_number);
+	TX_STATS(num_bam_int_handled_while_wait_for_bam);
+	TX_STATS(num_bam_int_handled_while_not_in_bam);
 
+	RX_STATS(max_outstanding_pkts);
 	RX_STATS(num_pkts_processed);
-	RX_STATS(ring_stats.ringFull);
-	RX_STATS(ring_stats.ringEmpty);
-	RX_STATS(ring_stats.ringUsageHigh);
-	RX_STATS(ring_stats.ringUsageLow);
-	RX_STATS(ring_stats.RingUtilCount);
-	RX_STATS(gsi_stats.bamFifoFull);
-	RX_STATS(gsi_stats.bamFifoEmpty);
-	RX_STATS(gsi_stats.bamFifoUsageHigh);
-	RX_STATS(gsi_stats.bamFifoUsageLow);
-	RX_STATS(gsi_stats.bamUtilCount);
+	RX_STATS(rx_ring_rp_value);
+	RX_STATS(rx_ind_ring_stats.ringFull);
+	RX_STATS(rx_ind_ring_stats.ringEmpty);
+	RX_STATS(rx_ind_ring_stats.ringUsageHigh);
+	RX_STATS(rx_ind_ring_stats.ringUsageLow);
+	RX_STATS(rx_ind_ring_stats.RingUtilCount);
+	RX_STATS(bam_stats.bamFifoFull);
+	RX_STATS(bam_stats.bamFifoEmpty);
+	RX_STATS(bam_stats.bamFifoUsageHigh);
+	RX_STATS(bam_stats.bamFifoUsageLow);
+	RX_STATS(bam_stats.bamUtilCount);
+	RX_STATS(num_bam_int_handled);
 	RX_STATS(num_db);
-	RX_STATS(num_qmb_int_handled);
-	RX_STATS(ipa_pipe_number);
+	RX_STATS(num_unexpected_db);
+	RX_STATS(num_pkts_in_dis_uninit_state);
+	RX_STATS(num_bam_int_handled_while_not_in_bam);
+	RX_STATS(num_bam_int_handled_while_in_bam_state);
 
 	IPA_ACTIVE_CLIENTS_DEC_SIMPLE();
 
 	return 0;
-}
-
-
-int ipa3_ntn_uc_reg_rdyCB(void (*ipa_ready_cb)(void *), void *user_data)
-{
-	int ret;
-
-	if (!ipa3_ctx) {
-		IPAERR("IPA ctx is null\n");
-		return -ENXIO;
-	}
-
-	ret = ipa3_uc_state_check();
-	if (ret) {
-		ipa3_ctx->uc_ntn_ctx.uc_ready_cb = ipa_ready_cb;
-		ipa3_ctx->uc_ntn_ctx.priv = user_data;
-		return 0;
-	}
-
-	return -EEXIST;
-}
-
-void ipa3_ntn_uc_dereg_rdyCB(void)
-{
-	ipa3_ctx->uc_ntn_ctx.uc_ready_cb = NULL;
-	ipa3_ctx->uc_ntn_ctx.priv = NULL;
-}
-
-static void ipa3_uc_ntn_loaded_handler(void)
-{
-	if (!ipa3_ctx) {
-		IPAERR("IPA ctx is null\n");
-		return;
-	}
-
-	if (ipa3_ctx->uc_ntn_ctx.uc_ready_cb) {
-		ipa3_ctx->uc_ntn_ctx.uc_ready_cb(
-			ipa3_ctx->uc_ntn_ctx.priv);
-
-		ipa3_ctx->uc_ntn_ctx.uc_ready_cb =
-			NULL;
-		ipa3_ctx->uc_ntn_ctx.priv = NULL;
-	}
 }
 
 int ipa3_ntn_init(void)
@@ -188,8 +156,6 @@ int ipa3_ntn_init(void)
 	uc_ntn_cbs.ipa_uc_event_hdlr = ipa3_uc_ntn_event_handler;
 	uc_ntn_cbs.ipa_uc_event_log_info_hdlr =
 		ipa3_uc_ntn_event_log_info_handler;
-	uc_ntn_cbs.ipa_uc_loaded_hdlr =
-		ipa3_uc_ntn_loaded_handler;
 
 	ipa3_uc_register_handlers(IPA_HW_FEATURE_NTN, &uc_ntn_cbs);
 
@@ -287,8 +253,7 @@ int ipa3_setup_uc_ntn_pipes(struct ipa_ntn_conn_in_params *in,
 	ep_dl = &ipa3_ctx->ep[ipa_ep_idx_dl];
 
 	if (ep_ul->valid || ep_dl->valid) {
-		IPAERR("EP already allocated ul:%d dl:%d\n",
-			   ep_ul->valid, ep_dl->valid);
+		IPAERR("EP already allocated.\n");
 		return -EFAULT;
 	}
 
@@ -433,7 +398,7 @@ int ipa3_tear_down_uc_offload_pipes(int ipa_ep_idx_ul,
 		goto fail;
 	}
 	ipa3_delete_dflt_flt_rules(ipa_ep_idx_ul);
-	memset(&ipa3_ctx->ep[ipa_ep_idx_ul], 0, sizeof(struct ipa3_ep_context));
+	memset(&ipa3_ctx->ep[ipa_ep_idx_dl], 0, sizeof(struct ipa3_ep_context));
 	IPADBG("ul client (ep: %d) disconnected\n", ipa_ep_idx_ul);
 
 fail:
