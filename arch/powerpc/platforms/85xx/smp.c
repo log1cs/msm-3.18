@@ -196,6 +196,9 @@ static int smp_85xx_kick_cpu(int nr)
 	int hw_cpu = get_hard_smp_processor_id(nr);
 	int ioremappable;
 	int ret = 0;
+#ifdef CONFIG_PPC64
+	unsigned long *ptr = NULL;
+#endif
 
 	WARN_ON(nr < 0 || nr >= NR_CPUS);
 	WARN_ON(hw_cpu < 0 || hw_cpu >= NR_CPUS);
@@ -309,11 +312,18 @@ out:
 #else
 	smp_generic_kick_cpu(nr);
 
-	flush_spin_table(spin_table);
-	out_be32(&spin_table->pir, hw_cpu);
-	out_be64((u64 *)(&spin_table->addr_h),
-		__pa(ppc_function_entry(generic_secondary_smp_init)));
-	flush_spin_table(spin_table);
+	ptr  = (unsigned long *)((unsigned long)&__run_at_kexec);
+	/* We shouldn't access spin_table from the bootloader to up any
+	 * secondary cpu for kexec kernel, and kexec kernel already
+	 * know how to jump to generic_secondary_smp_init.
+	 */
+	if (!*ptr) {
+		flush_spin_table(spin_table);
+		out_be32(&spin_table->pir, hw_cpu);
+		out_be64((u64 *)(&spin_table->addr_h),
+		 __pa((u64)*((unsigned long long *)generic_secondary_smp_init)));
+		flush_spin_table(spin_table);
+	}
 #endif
 
 	local_irq_restore(flags);
@@ -331,13 +341,14 @@ struct smp_ops_t smp_85xx_ops = {
 	.cpu_disable	= generic_cpu_disable,
 	.cpu_die	= generic_cpu_die,
 #endif
-#ifdef CONFIG_KEXEC
+#if defined(CONFIG_KEXEC) && defined(CONFIG_PPC32)
 	.give_timebase	= smp_generic_give_timebase,
 	.take_timebase	= smp_generic_take_timebase,
 #endif
 };
 
 #ifdef CONFIG_KEXEC
+#ifdef CONFIG_PPC32
 atomic_t kexec_down_cpus = ATOMIC_INIT(0);
 
 void mpc85xx_smp_kexec_cpu_down(int crash_shutdown, int secondary)
@@ -356,6 +367,14 @@ static void mpc85xx_smp_kexec_down(void *arg)
 	if (ppc_md.kexec_cpu_down)
 		ppc_md.kexec_cpu_down(0,1);
 }
+#else
+void mpc85xx_smp_kexec_cpu_down(int crash_shutdown, int secondary)
+{
+	local_irq_disable();
+	hard_irq_disable();
+	mpic_teardown_this_cpu(secondary);
+}
+#endif
 
 static void map_and_flush(unsigned long paddr)
 {
@@ -407,11 +426,14 @@ static void mpc85xx_smp_flush_dcache_kexec(struct kimage *image)
 
 static void mpc85xx_smp_machine_kexec(struct kimage *image)
 {
+#ifdef CONFIG_PPC32
 	int timeout = INT_MAX;
 	int i, num_cpus = num_present_cpus();
+#endif
 
 	mpc85xx_smp_flush_dcache_kexec(image);
 
+#ifdef CONFIG_PPC32
 	if (image->type == KEXEC_TYPE_DEFAULT)
 		smp_call_function(mpc85xx_smp_kexec_down, NULL, 0);
 
@@ -429,6 +451,7 @@ static void mpc85xx_smp_machine_kexec(struct kimage *image)
 		if ( i == smp_processor_id() ) continue;
 		mpic_reset_core(i);
 	}
+#endif
 
 	default_machine_kexec(image);
 }
