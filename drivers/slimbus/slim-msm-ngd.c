@@ -27,6 +27,7 @@
 #include <linux/timer.h>
 #include <linux/msm-sps.h>
 #include "slim-msm.h"
+#include <soc/qcom/subsystem_restart.h>
 
 #define NGD_SLIM_NAME	"ngd_msm_ctrl"
 #define SLIM_LA_MGR	0xFF
@@ -1223,7 +1224,7 @@ static void ngd_slim_rx(struct msm_slim_ctrl *dev, u8 *buf)
 static int ngd_slim_power_up(struct msm_slim_ctrl *dev, bool mdm_restart)
 {
 	void __iomem *ngd;
-	int timeout, retries = 0, ret = 0;
+	int timeout, retries = 0, ret = 0, rc = 0;
 	enum msm_ctrl_state cur_state = dev->state;
 	u32 laddr;
 	u32 rx_msgq;
@@ -1255,6 +1256,11 @@ hw_init_retry:
 				!atomic_read(&dev->ssr_in_progress)) {
 				retries++;
 				goto hw_init_retry;
+			}
+			if (retries == INIT_MX_RETRIES) {
+				rc = subsystem_restart("adsp");
+				if (rc < 0)
+					SLIM_ERR(dev, "Error %d restarting subsystem(adsp)\n", rc);
 			}
 			return ret;
 		}
