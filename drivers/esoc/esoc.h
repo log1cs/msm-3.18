@@ -46,7 +46,6 @@ struct esoc_eng {
  * struct esoc_clink: Representation of external esoc device
  * @name: Name of the external esoc.
  * @link_name: name of the physical link.
- * @link_info: additional info about the physical link.
  * @parent: parent device.
  * @dev: device for userspace interface.
  * @pdev: platform device to interface with SSR driver.
@@ -63,14 +62,10 @@ struct esoc_eng {
  * @auto_boot: boots independently.
  * @primary: primary esoc controls(reset/poweroff) all secondary
  *	 esocs, but not	otherway around.
- * @statusline_not_a_powersource: True if status line to esoc is not a
- *				power source.
- * @userspace_handle_shutdown: True if user space handles shutdown requests.
  */
 struct esoc_clink {
 	const char *name;
 	const char *link_name;
-	const char *link_info;
 	struct device *parent;
 	struct device dev;
 	struct platform_device *pdev;
@@ -87,8 +82,6 @@ struct esoc_clink {
 	struct device_node *np;
 	bool auto_boot;
 	bool primary;
-	bool statusline_not_a_powersource;
-	bool userspace_handle_shutdown;
 };
 
 /**
