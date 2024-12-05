@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  * arch/arm/include/asm/unwind.h
  *
@@ -41,12 +42,22 @@ struct unwind_table {
 	const struct unwind_idx *stop;
 	unsigned long begin_addr;
 	unsigned long end_addr;
+#ifdef CONFIG_ARM_UNWIND_USER
+	pid_t pid;
+#endif
 };
 
 extern struct unwind_table *unwind_table_add(unsigned long start,
 					     unsigned long size,
 					     unsigned long text_addr,
 					     unsigned long text_size);
+#ifdef CONFIG_ARM_UNWIND_USER
+extern struct unwind_table *unwind_table_add_user(unsigned long start,
+					     unsigned long size,
+					     unsigned long text_addr,
+					     unsigned long text_size);
+#endif
+
 extern void unwind_table_del(struct unwind_table *tab);
 extern void unwind_backtrace(struct pt_regs *regs, struct task_struct *tsk);
 
