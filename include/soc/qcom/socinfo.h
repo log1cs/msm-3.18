@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -78,8 +78,8 @@
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,mdm9640")
 #define early_machine_is_mdm9650()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,mdm9650")
-#define early_machine_is_sdx20()	\
-	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdx20")
+#define early_machine_is_sdxhedgehog()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdxhedgehog")
 #define early_machine_is_fsm9900()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,fsm9900")
 #define early_machine_is_msm8994()	\
@@ -94,8 +94,6 @@
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,msm8952")
 #define early_machine_is_msm8953()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,msm8953")
-#define early_machine_is_sdm450()	\
-	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdm450")
 #define early_machine_is_msm8937()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,msm8937")
 #define early_machine_is_msm8996()	\
@@ -140,14 +138,13 @@
 #define early_machine_is_fsm9010()	0
 #define early_machine_is_msm8952()	0
 #define early_machine_is_msm8953()	0
-#define early_machine_is_sdm450()	0
 #define early_machine_is_msm8937()	0
 #define early_machine_is_msm8996()	0
 #define early_machine_is_msm8976() 0
 #define early_machine_is_msm8929()	0
 #define early_machine_is_mdm9607()	0
 #define early_machine_is_mdm9650()	0
-#define early_machine_is_sdx20()	0
+#define early_machine_is_sdxhedgehog()	0
 #define early_machine_is_msmcobalt()	0
 #endif
 
@@ -206,7 +203,6 @@ enum msm_cpu {
 	FSM_CPU_9010,
 	MSM_CPU_8952,
 	MSM_CPU_8953,
-	MSM_CPU_SDM450,
 	MSM_CPU_8937,
 	MSM_CPU_8996,
 	MSM_CPU_8976,
@@ -214,8 +210,7 @@ enum msm_cpu {
 	MSM_CPU_9607,
 	MSM_CPU_9650,
 	MSM_CPU_COBALT,
-	SDX_CPU_20,
-	MSM_CPU_9150,
+	SDX_CPU_HEDGEHOG,
 };
 
 struct msm_soc_info {
