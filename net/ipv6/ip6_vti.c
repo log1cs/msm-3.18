@@ -416,6 +416,7 @@ vti6_xmit(struct sk_buff *skb, struct net_device *dev, struct flowi *fl)
 	struct net_device_stats *stats = &t->dev->stats;
 	struct dst_entry *dst = skb_dst(skb);
 	struct net_device *tdev;
+	int pkt_len = skb->len;
 	int err = -1;
 
 	if (!dst)
@@ -450,7 +451,7 @@ vti6_xmit(struct sk_buff *skb, struct net_device *dev, struct flowi *fl)
 		struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
 
 		u64_stats_update_begin(&tstats->syncp);
-		tstats->tx_bytes += skb->len;
+		tstats->tx_bytes += pkt_len;
 		tstats->tx_packets++;
 		u64_stats_update_end(&tstats->syncp);
 	} else {
@@ -560,10 +561,9 @@ static int vti6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 		return 0;
 
 	if (type == NDISC_REDIRECT)
-		ip6_redirect(skb, net, skb->dev->ifindex, 0,
-			     sock_net_uid(net, NULL));
+		ip6_redirect(skb, net, skb->dev->ifindex, 0);
 	else
-		ip6_update_pmtu(skb, net, info, 0, 0, sock_net_uid(net, NULL));
+		ip6_update_pmtu(skb, net, info, 0, 0, INVALID_UID);
 	xfrm_state_put(x);
 
 	return 0;
