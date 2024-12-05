@@ -1,4 +1,5 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* 2017-01-05: File changed by Sony Corporation */
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -115,6 +116,7 @@ static  int msm_cpp_update_gdscr_status(struct cpp_device *cpp_dev,
 	bool status);
 static int msm_cpp_buffer_private_ops(struct cpp_device *cpp_dev,
 	uint32_t buff_mgr_ops, uint32_t id, void *arg);
+
 static void msm_cpp_set_micro_irq_mask(struct cpp_device *cpp_dev,
 	uint8_t enable, uint32_t irq_mask);
 static void msm_cpp_flush_queue_and_release_buffer(struct cpp_device *cpp_dev,
@@ -124,6 +126,13 @@ static int msm_cpp_dump_addr(struct cpp_device *cpp_dev,
 	struct msm_cpp_frame_info_t *frame_info);
 static int32_t msm_cpp_reset_vbif_and_load_fw(struct cpp_device *cpp_dev);
 
+
+#if defined(CONFIG_SONY_CAM_V4L2)
+#define CPP_DBG(fmt, args...)
+#define CPP_LOW(fmt, args...)
+#define ERR_USER_COPY(to)
+#define ERR_COPY_FROM_USER()
+#else
 #if CONFIG_MSM_CPP_DBG
 #define CPP_DBG(fmt, args...) pr_err(fmt, ##args)
 #else
@@ -138,6 +147,7 @@ static int32_t msm_cpp_reset_vbif_and_load_fw(struct cpp_device *cpp_dev);
 #define ERR_USER_COPY(to) pr_err("copy %s user\n", \
 			((to) ? "to" : "from"))
 #define ERR_COPY_FROM_USER() ERR_USER_COPY(0)
+#endif
 
 #define msm_dequeue(queue, member, pop_dir) ({	   \
 	unsigned long flags;		  \
@@ -302,7 +312,11 @@ static void cpp_timer_callback(unsigned long data);
 uint8_t induce_error;
 static int msm_cpp_enable_debugfs(struct cpp_device *cpp_dev);
 
+#if defined(CONFIG_SONY_CAM_V4L2)
+static inline void msm_cpp_write(u32 data, void __iomem *cpp_base)
+#else
 static void msm_cpp_write(u32 data, void __iomem *cpp_base)
+#endif
 {
 	msm_camera_io_w((data), cpp_base + MSM_CPP_MICRO_FIFO_RX_DATA);
 }
@@ -833,14 +847,9 @@ static irqreturn_t msm_cpp_irq(int irq_num, void *data)
 	if (irq_status & 0x8) {
 		tx_level = msm_camera_io_r(cpp_dev->base +
 			MSM_CPP_MICRO_FIFO_TX_STAT) >> 2;
-		if (tx_level < MSM_CPP_TX_FIFO_LEVEL) {
-			for (i = 0; i < tx_level; i++) {
-				tx_fifo[i] = msm_camera_io_r(cpp_dev->base +
-					MSM_CPP_MICRO_FIFO_TX_DATA);
-			}
-		} else {
-			pr_err("Fatal invalid tx level %d", tx_level);
-			goto err;
+		for (i = 0; i < tx_level; i++) {
+			tx_fifo[i] = msm_camera_io_r(cpp_dev->base +
+				MSM_CPP_MICRO_FIFO_TX_DATA);
 		}
 		spin_lock_irqsave(&cpp_dev->tasklet_lock, flags);
 		queue_cmd = &cpp_dev->tasklet_queue_cmd[cpp_dev->taskletq_idx];
@@ -895,7 +904,6 @@ static irqreturn_t msm_cpp_irq(int irq_num, void *data)
 		pr_debug("DEBUG_R1: 0x%x\n",
 			msm_camera_io_r(cpp_dev->base + 0x8C));
 	}
-err:
 	msm_camera_io_w(irq_status, cpp_dev->base + MSM_CPP_MICRO_IRQGEN_CLR);
 	return IRQ_HANDLED;
 }
@@ -2051,8 +2059,6 @@ static int msm_cpp_check_buf_type(struct msm_buf_mngr_info *buff_mgr_info,
 			/* More or equal bufs as Input buffer */
 			num_output_bufs = new_frame->batch_info.batch_size;
 		}
-		if (num_output_bufs > MSM_OUTPUT_BUF_CNT)
-			return 0;
 		for (i = 0; i < num_output_bufs; i++) {
 			new_frame->output_buffer_info[i].index =
 				buff_mgr_info->user_buf.buf_idx[i];
@@ -2882,15 +2888,13 @@ end:
 	return rc;
 }
 
-static int msm_cpp_validate_ioctl_input(unsigned int cmd, void *arg,
+static int msm_cpp_validate_input(unsigned int cmd, void *arg,
 	struct msm_camera_v4l2_ioctl_t **ioctl_ptr)
 {
 	switch (cmd) {
 	case MSM_SD_SHUTDOWN:
 	case MSM_SD_NOTIFY_FREEZE:
 	case MSM_SD_UNNOTIFY_FREEZE:
-	case VIDIOC_MSM_CPP_IOMMU_ATTACH:
-	case VIDIOC_MSM_CPP_IOMMU_DETACH:
 		break;
 	default: {
 		if (ioctl_ptr == NULL) {
@@ -2899,9 +2903,8 @@ static int msm_cpp_validate_ioctl_input(unsigned int cmd, void *arg,
 		}
 
 		*ioctl_ptr = arg;
-		if (((*ioctl_ptr) == NULL) ||
-			((*ioctl_ptr)->ioctl_ptr == NULL) ||
-			((*ioctl_ptr)->len == 0)) {
+		if ((*ioctl_ptr == NULL) ||
+			(*ioctl_ptr)->ioctl_ptr == NULL) {
 			pr_err("Error invalid ioctl argument cmd %u", cmd);
 			return -EINVAL;
 		}
@@ -2933,7 +2936,7 @@ long msm_cpp_subdev_ioctl(struct v4l2_subdev *sd,
 		return -EINVAL;
 	}
 
-	rc = msm_cpp_validate_ioctl_input(cmd, arg, &ioctl_ptr);
+	rc = msm_cpp_validate_input(cmd, arg, &ioctl_ptr);
 	if (rc != 0) {
 		pr_err("input validation failed\n");
 		return rc;
@@ -3426,7 +3429,7 @@ STREAM_BUFF_END:
 			(cpp_dev->stream_cnt == 0)) {
 			rc = cam_smmu_ops(cpp_dev->iommu_hdl, CAM_SMMU_DETACH);
 			if (rc < 0) {
-				pr_err("%s:%dError iommu detach failed\n",
+				pr_err("%s:%dError iommu atach failed\n",
 					__func__, __LINE__);
 				rc = -EINVAL;
 				break;
@@ -3435,7 +3438,6 @@ STREAM_BUFF_END:
 		} else {
 			pr_err("%s:%d IOMMMU attach triggered in invalid state\n",
 				__func__, __LINE__);
-			rc = -EINVAL;
 		}
 		break;
 	}
@@ -4068,8 +4070,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 	default:
 		pr_err_ratelimited("%s: unsupported compat type :%x LOAD %lu\n",
 				__func__, cmd, VIDIOC_MSM_CPP_LOAD_FIRMWARE);
-		mutex_unlock(&cpp_dev->mutex);
-		return -EINVAL;
+		break;
 	}
 
 	mutex_unlock(&cpp_dev->mutex);
@@ -4100,7 +4101,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 	default:
 		pr_err_ratelimited("%s: unsupported compat type :%d\n",
 				__func__, cmd);
-		return -EINVAL;
+		break;
 	}
 
 	if (is_copytouser_req) {

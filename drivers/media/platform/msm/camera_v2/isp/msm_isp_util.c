@@ -1,4 +1,5 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* 2017-01-05: File changed by Sony Corporation */
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -351,34 +352,6 @@ int msm_isp_unsubscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 	return msm_isp_process_event_subscription(fh, sub, false);
 }
 
-static int msm_isp_update_fe_frame_id(struct vfe_device *vfe_dev,
-	void *arg)
-{
-	struct msm_vfe_update_fe_frame_id *session_frameid = arg;
-	int rc = 0;
-	/*
-	* For Offline VFE, HAL expects same frame id
-	* for offline output which it requested in do_reprocess.
-	*/
-	vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id =
-		   session_frameid->frame_id;
-	return rc;
-}
-
-static int msm_isp_restart_fe(struct vfe_device *vfe_dev,
-	void *arg)
-{
-	struct msm_vfe_restart_fe_cmd *rst_fe = arg;
-	int rc = 0;
-	/*
-	* In case of overflow recovery
-	* restart fetch engine
-	*/
-	if (rst_fe->restart_fe)
-		vfe_dev->fetch_engine_info.is_busy = 1;
-	return rc;
-}
-
 static int msm_isp_start_fetch_engine(struct vfe_device *vfe_dev,
 	void *arg)
 {
@@ -419,10 +392,8 @@ static int msm_isp_start_fetch_engine_multi_pass(struct vfe_device *vfe_dev,
 			0, 1);
 		msm_isp_reset_framedrop(vfe_dev, stream_info);
 
-		mutex_lock(&vfe_dev->buf_mgr->lock);
 		rc = msm_isp_cfg_offline_ping_pong_address(vfe_dev, stream_info,
 			VFE_PING_FLAG, fe_cfg->output_buf_idx);
-		mutex_unlock(&vfe_dev->buf_mgr->lock);
 		if (rc < 0) {
 			pr_err("%s: Fetch engine config failed\n", __func__);
 			return -EINVAL;
@@ -648,11 +619,6 @@ static int msm_isp_set_dual_HW_master_slave_mode(
 	}
 	ISP_DBG("%s: vfe %d num_src %d\n", __func__, vfe_dev->pdev->id,
 		dual_hw_ms_cmd->num_src);
-	if (dual_hw_ms_cmd->num_src > VFE_SRC_MAX) {
-		pr_err("%s: Error! Invalid num_src %d\n", __func__,
-			dual_hw_ms_cmd->num_src);
-		return -EINVAL;
-	}
 	/* This for loop is for non-primary intf to be marked with Master/Slave
 	 * in order for frame id sync. But their timestamp is not saved.
 	 * So no sof_info resource is allocated */
@@ -916,7 +882,6 @@ static long msm_isp_ioctl_unlocked(struct v4l2_subdev *sd,
 		break;
 	case VIDIOC_MSM_ISP_AXI_RESTART:
 		mutex_lock(&vfe_dev->core_mutex);
-		mutex_lock(&vfe_dev->buf_mgr->lock);
 		if (atomic_read(&vfe_dev->error_info.overflow_state)
 			!= HALT_ENFORCED) {
 			rc = msm_isp_stats_restart(vfe_dev);
@@ -927,7 +892,6 @@ static long msm_isp_ioctl_unlocked(struct v4l2_subdev *sd,
 			pr_err_ratelimited("%s: no AXI restart, halt enforced.\n",
 				__func__);
 		}
-		mutex_unlock(&vfe_dev->buf_mgr->lock);
 		mutex_unlock(&vfe_dev->core_mutex);
 		break;
 	case VIDIOC_MSM_ISP_INPUT_CFG:
@@ -962,19 +926,6 @@ static long msm_isp_ioctl_unlocked(struct v4l2_subdev *sd,
 		rc = msm_isp_start_fetch_engine_multi_pass(vfe_dev, arg);
 		mutex_unlock(&vfe_dev->core_mutex);
 		break;
-
-	case VIDIOC_MSM_ISP_RESTART_FE:
-		mutex_lock(&vfe_dev->core_mutex);
-		rc = msm_isp_restart_fe(vfe_dev, arg);
-		mutex_unlock(&vfe_dev->core_mutex);
-		break;
-
-	case VIDIOC_MSM_ISP_UPDATE_FE_FRAME_ID:
-		mutex_lock(&vfe_dev->core_mutex);
-		rc = msm_isp_update_fe_frame_id(vfe_dev, arg);
-		mutex_unlock(&vfe_dev->core_mutex);
-		break;
-
 	case VIDIOC_MSM_ISP_REG_UPDATE_CMD:
 		if (arg) {
 			enum msm_vfe_input_src frame_src =
@@ -1605,10 +1556,6 @@ int msm_isp_cal_word_per_line(uint32_t output_format,
 	case V4L2_PIX_FMT_P16GBRG10:
 	case V4L2_PIX_FMT_P16GRBG10:
 	case V4L2_PIX_FMT_P16RGGB10:
-	case V4L2_PIX_FMT_P16BGGR12:
-	case V4L2_PIX_FMT_P16GBRG12:
-	case V4L2_PIX_FMT_P16GRBG12:
-	case V4L2_PIX_FMT_P16RGGB12:
 		val = CAL_WORD(pixel_per_line, 1, 4);
 	break;
 	case V4L2_PIX_FMT_NV24:
@@ -1675,10 +1622,6 @@ enum msm_isp_pack_fmt msm_isp_get_pack_format(uint32_t output_format)
 	case V4L2_PIX_FMT_P16GBRG10:
 	case V4L2_PIX_FMT_P16GRBG10:
 	case V4L2_PIX_FMT_P16RGGB10:
-	case V4L2_PIX_FMT_P16BGGR12:
-	case V4L2_PIX_FMT_P16GBRG12:
-	case V4L2_PIX_FMT_P16GRBG12:
-	case V4L2_PIX_FMT_P16RGGB12:
 		return PLAIN16;
 	default:
 		msm_isp_print_fourcc_error(__func__, output_format);
@@ -1763,10 +1706,6 @@ int msm_isp_get_bit_per_pixel(uint32_t output_format)
 	case V4L2_PIX_FMT_QGRBG12:
 	case V4L2_PIX_FMT_QRGGB12:
 	case V4L2_PIX_FMT_Y12:
-	case V4L2_PIX_FMT_P16BGGR12:
-	case V4L2_PIX_FMT_P16GBRG12:
-	case V4L2_PIX_FMT_P16GRBG12:
-	case V4L2_PIX_FMT_P16RGGB12:
 		return 12;
 	case V4L2_PIX_FMT_SBGGR14:
 	case V4L2_PIX_FMT_SGBRG14:
@@ -1803,38 +1742,11 @@ void msm_isp_update_error_frame_count(struct vfe_device *vfe_dev)
 static int msm_isp_process_iommu_page_fault(struct vfe_device *vfe_dev)
 {
 	int rc = vfe_dev->buf_mgr->pagefault_debug_disable;
-	uint32_t irq_status0, irq_status1;
-	uint32_t overflow_mask;
-	unsigned long irq_flags;
 
-	/* Check if any overflow bit is set */
-	vfe_dev->hw_info->vfe_ops.core_ops.
-		get_overflow_mask(&overflow_mask);
-	vfe_dev->hw_info->vfe_ops.irq_ops.
-		read_irq_status(vfe_dev, &irq_status0, &irq_status1);
-	overflow_mask &= irq_status1;
-	spin_lock_irqsave(
-		&vfe_dev->common_data->common_dev_data_lock, irq_flags);
-	if (overflow_mask ||
-		atomic_read(&vfe_dev->error_info.overflow_state) !=
-			NO_OVERFLOW) {
-		spin_unlock_irqrestore(
-			&vfe_dev->common_data->common_dev_data_lock, irq_flags);
-		pr_err_ratelimited("%s: overflow detected during IOMMU\n",
-			__func__);
-		/* Don't treat the Overflow + Page fault scenario as fatal.
-		 * Instead try to do a recovery. Using an existing event as
-		 * as opposed to creating a new event.
-		 */
-		msm_isp_halt_send_error(vfe_dev, ISP_EVENT_PING_PONG_MISMATCH);
-	} else {
-		spin_unlock_irqrestore(
-			&vfe_dev->common_data->common_dev_data_lock, irq_flags);
-		pr_err("%s:%d] VFE%d Handle Page fault! vfe_dev %pK\n",
-			__func__, __LINE__,  vfe_dev->pdev->id, vfe_dev);
-		vfe_dev->hw_info->vfe_ops.axi_ops.halt(vfe_dev, 0);
-		msm_isp_halt_send_error(vfe_dev, ISP_EVENT_IOMMU_P_FAULT);
-	}
+	pr_err("%s:%d] VFE%d Handle Page fault! vfe_dev %pK\n", __func__,
+		__LINE__,  vfe_dev->pdev->id, vfe_dev);
+
+	msm_isp_halt_send_error(vfe_dev, ISP_EVENT_IOMMU_P_FAULT);
 
 	if (vfe_dev->buf_mgr->pagefault_debug_disable == 0) {
 		vfe_dev->buf_mgr->pagefault_debug_disable = 1;
@@ -1877,8 +1789,6 @@ void msm_isp_process_overflow_irq(
 	uint32_t force_overflow)
 {
 	uint32_t overflow_mask;
-	unsigned long flags;
-	struct msm_isp_event_data error_event;
 
 	/* if there are no active streams - do not start recovery */
 	if (!vfe_dev->axi_data.num_active_stream)
@@ -1902,86 +1812,73 @@ void msm_isp_process_overflow_irq(
 	if (!force_overflow)
 		overflow_mask &= *irq_status1;
 
-	if (!overflow_mask)
-		return;
+	if (overflow_mask) {
+		struct msm_isp_event_data error_event;
 
-	spin_lock_irqsave(&vfe_dev->common_data->common_dev_data_lock,
-		flags);
-	if (atomic_cmpxchg(&vfe_dev->error_info.overflow_state,
-		NO_OVERFLOW, OVERFLOW_DETECTED)) {
-		spin_unlock_irqrestore(
-			&vfe_dev->common_data->common_dev_data_lock,
-			flags);
-		return;
-	}
-	if (vfe_dev->reset_pending == 1) {
-		pr_err("%s:%d failed: overflow %x during reset\n",
-			__func__, __LINE__, overflow_mask);
-		/* Clear overflow bits since reset is pending */
-		*irq_status1 &= ~overflow_mask;
-		spin_unlock_irqrestore(&vfe_dev->common_data->
-			common_dev_data_lock, flags);
-		return;
-	}
-	ISP_DBG("%s: VFE%d Bus overflow detected: start recovery!\n",
-		__func__, vfe_dev->pdev->id);
-
-	trace_msm_cam_isp_overflow(vfe_dev, *irq_status0, *irq_status1);
-
-	/* maks off irq for current vfe */
-	vfe_dev->recovery_irq0_mask = vfe_dev->irq0_mask;
-	vfe_dev->recovery_irq1_mask = vfe_dev->irq1_mask;
-
-	vfe_dev->hw_info->vfe_ops.core_ops.
-		set_halt_restart_mask(vfe_dev);
-	vfe_dev->hw_info->vfe_ops.axi_ops.halt(vfe_dev, 0);
-	/* mask off other vfe if dual vfe is used */
-	if (vfe_dev->is_split) {
-		uint32_t other_vfe_id;
-		struct vfe_device *other_vfe_dev;
-
-		other_vfe_id = (vfe_dev->pdev->id == ISP_VFE0) ?
-			ISP_VFE1 : ISP_VFE0;
-		other_vfe_dev = vfe_dev->common_data->
-			dual_vfe_res->vfe_dev[other_vfe_id];
-		if (other_vfe_dev) {
-			other_vfe_dev->recovery_irq0_mask =
-				other_vfe_dev->irq0_mask;
-			other_vfe_dev->recovery_irq1_mask =
-				other_vfe_dev->irq1_mask;
+		if (vfe_dev->reset_pending == 1) {
+			pr_err("%s:%d failed: overflow %x during reset\n",
+				__func__, __LINE__, overflow_mask);
+			/* Clear overflow bits since reset is pending */
+			*irq_status1 &= ~overflow_mask;
+			return;
 		}
 
-		atomic_cmpxchg(&(vfe_dev->common_data->dual_vfe_res->
-			vfe_dev[other_vfe_id]->
-			error_info.overflow_state),
+		ISP_DBG("%s: VFE%d Bus overflow detected: start recovery!\n",
+			__func__, vfe_dev->pdev->id);
+
+		trace_msm_cam_isp_overflow(vfe_dev, *irq_status0, *irq_status1);
+
+		/* maks off irq for current vfe */
+		atomic_cmpxchg(&vfe_dev->error_info.overflow_state,
 			NO_OVERFLOW, OVERFLOW_DETECTED);
+		vfe_dev->recovery_irq0_mask = vfe_dev->irq0_mask;
+		vfe_dev->recovery_irq1_mask = vfe_dev->irq1_mask;
 
 		vfe_dev->hw_info->vfe_ops.core_ops.
-			set_halt_restart_mask(vfe_dev->common_data->
-			dual_vfe_res->vfe_dev[other_vfe_id]);
-		if (other_vfe_dev) {
-			other_vfe_dev->hw_info->vfe_ops.axi_ops.
-				halt(other_vfe_dev, 0);
+			set_halt_restart_mask(vfe_dev);
+
+		/* mask off other vfe if dual vfe is used */
+		if (vfe_dev->is_split) {
+			uint32_t other_vfe_id;
+			struct vfe_device *other_vfe_dev;
+
+			other_vfe_id = (vfe_dev->pdev->id == ISP_VFE0) ?
+				ISP_VFE1 : ISP_VFE0;
+			other_vfe_dev = vfe_dev->common_data->
+				dual_vfe_res->vfe_dev[other_vfe_id];
+			if (other_vfe_dev) {
+				other_vfe_dev->recovery_irq0_mask =
+					other_vfe_dev->irq0_mask;
+				other_vfe_dev->recovery_irq1_mask =
+					other_vfe_dev->irq1_mask;
+			}
+
+			atomic_cmpxchg(&(vfe_dev->common_data->dual_vfe_res->
+				vfe_dev[other_vfe_id]->
+				error_info.overflow_state),
+				NO_OVERFLOW, OVERFLOW_DETECTED);
+
+			vfe_dev->hw_info->vfe_ops.core_ops.
+				set_halt_restart_mask(vfe_dev->common_data->
+				dual_vfe_res->vfe_dev[other_vfe_id]);
+		}
+
+		/* reset irq status so skip further process */
+		*irq_status0 = 0;
+		*irq_status1 = 0;
+
+		/* send overflow event as needed */
+		if (atomic_read(&vfe_dev->error_info.overflow_state)
+			!= HALT_ENFORCED) {
+			memset(&error_event, 0, sizeof(error_event));
+			error_event.frame_id =
+				vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
+			error_event.u.error_info.err_type =
+				ISP_ERROR_BUS_OVERFLOW;
+			msm_isp_send_event(vfe_dev,
+				ISP_EVENT_ERROR, &error_event);
 		}
 	}
-
-	/* reset irq status so skip further process */
-	*irq_status0 = 0;
-	*irq_status1 = 0;
-
-	/* send overflow event as needed */
-	if (atomic_read(&vfe_dev->error_info.overflow_state)
-		!= HALT_ENFORCED) {
-		memset(&error_event, 0, sizeof(error_event));
-		error_event.frame_id =
-			vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
-		error_event.u.error_info.err_type =
-			ISP_ERROR_BUS_OVERFLOW;
-		msm_isp_send_event(vfe_dev,
-			ISP_EVENT_ERROR, &error_event);
-	}
-	spin_unlock_irqrestore(&vfe_dev->common_data->
-		common_dev_data_lock, flags);
 }
 
 void msm_isp_reset_burst_count_and_frame_drop(
@@ -2216,8 +2113,6 @@ static void msm_vfe_iommu_fault_handler(struct iommu_domain *domain,
 		if (vfe_dev->vfe_open_cnt > 0) {
 			atomic_set(&vfe_dev->error_info.overflow_state,
 				HALT_ENFORCED);
-			pr_err_ratelimited("%s: fault address is %lx\n",
-				__func__, iova);
 			msm_isp_process_iommu_page_fault(vfe_dev);
 		} else {
 			pr_err("%s: no handling, vfe open cnt = %d\n",
@@ -2311,6 +2206,10 @@ int msm_isp_open_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	cam_smmu_reg_client_page_fault_handler(
 			vfe_dev->buf_mgr->iommu_hdl,
 			msm_vfe_iommu_fault_handler, vfe_dev);
+#if defined(CONFIG_SONY_CAM_V4L2)
+	vfe_dev->timeout = VFE_MAX_CFG_TIMEOUT;
+#endif
+
 	mutex_unlock(&vfe_dev->core_mutex);
 	mutex_unlock(&vfe_dev->realtime_mutex);
 	return 0;
