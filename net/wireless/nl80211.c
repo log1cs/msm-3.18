@@ -208,6 +208,36 @@ cfg80211_get_dev_from_info(struct net *netns, struct genl_info *info)
 	return __cfg80211_rdev_from_attrs(netns, info->attrs);
 }
 
+static int validate_beacon_head(const struct nlattr *attr)
+{
+	const u8 *data = nla_data(attr);
+	unsigned int len = nla_len(attr);
+	const struct element *elem;
+	const struct ieee80211_mgmt *mgmt = (void *)data;
+	unsigned int fixedlen = offsetof(struct ieee80211_mgmt,
+					 u.beacon.variable);
+
+	if (len < fixedlen)
+		goto err;
+
+	if (ieee80211_hdrlen(mgmt->frame_control) !=
+	    offsetof(struct ieee80211_mgmt, u.beacon))
+		goto err;
+
+	data += fixedlen;
+	len -= fixedlen;
+
+	for_each_element(elem, data, len) {
+		/* nothing */
+	}
+
+	if (for_each_element_completed(elem, data, len))
+		return 0;
+
+err:
+	return -EINVAL;
+}
+
 /* policy for the attributes */
 static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
 	[NL80211_ATTR_WIPHY] = { .type = NLA_U32 },
@@ -493,14 +523,6 @@ nl80211_bss_select_policy[NL80211_BSS_SELECT_ATTR_MAX + 1] = {
 	[NL80211_BSS_SELECT_ATTR_RSSI_ADJUST] = {
 		.len = sizeof(struct nl80211_bss_select_rssi_adjust)
 	},
-};
-
-/* policy for packet pattern attributes */
-static const struct nla_policy
-nl80211_packet_pattern_policy[MAX_NL80211_PKTPAT + 1] = {
-	[NL80211_PKTPAT_MASK] = { .type = NLA_BINARY, },
-	[NL80211_PKTPAT_PATTERN] = { .type = NLA_BINARY, },
-	[NL80211_PKTPAT_OFFSET] = { .type = NLA_U32 },
 };
 
 static int nl80211_prepare_wdev_dump(struct sk_buff *skb,
@@ -3517,6 +3539,11 @@ static int nl80211_parse_beacon(struct nlattr *attrs[],
 	memset(bcn, 0, sizeof(*bcn));
 
 	if (attrs[NL80211_ATTR_BEACON_HEAD]) {
+		int ret = validate_beacon_head(attrs[NL80211_ATTR_BEACON_HEAD]);
+
+		if (ret)
+			return ret;
+
 		bcn->head = nla_data(attrs[NL80211_ATTR_BEACON_HEAD]);
 		bcn->head_len = nla_len(attrs[NL80211_ATTR_BEACON_HEAD]);
 		if (!bcn->head_len)
@@ -5783,10 +5810,6 @@ static int validate_scan_freqs(struct nlattr *freqs)
 		if (nla_len(attr1) != sizeof(u32))
 			return 0;
 
-	nla_for_each_nested(attr1, freqs, tmp1)
-		if (nla_len(attr1) != sizeof(u32))
-			return 0;
-
 	nla_for_each_nested(attr1, freqs, tmp1) {
 		n_channels++;
 		/*
@@ -6243,7 +6266,9 @@ nl80211_parse_sched_scan_plans(struct wiphy *wiphy, int n_plans,
 static int nl80211_abort_scan(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
+#ifndef CONFIG_SOMC_WIFI_CONTROL
 	struct wireless_dev *wdev = info->user_ptr[1];
+#endif
 
 	if (!rdev->ops->abort_scan)
 		return -EOPNOTSUPP;
@@ -6254,7 +6279,9 @@ static int nl80211_abort_scan(struct sk_buff *skb, struct genl_info *info)
 	if (!rdev->scan_req)
 		return -ENOENT;
 
+#ifndef CONFIG_SOMC_WIFI_CONTROL
 	rdev_abort_scan(rdev, wdev);
+#endif
 	return 0;
 }
 
@@ -7156,8 +7183,14 @@ static int nl80211_dump_survey(struct sk_buff *skb,
 
 static bool nl80211_valid_wpa_versions(u32 wpa_versions)
 {
+#ifndef CONFIG_SOMC_WIFI_CONTROL
 	return !(wpa_versions & ~(NL80211_WPA_VERSION_1 |
 				  NL80211_WPA_VERSION_2));
+#else
+	return !(wpa_versions & ~(NL80211_WPA_VERSION_1 |
+				NL80211_WPA_VERSION_2 |
+				NL80211_WAPI_VERSION_1 ));
+#endif /* CONFIG_SOMC_WIFI_CONTROL */
 }
 
 static int nl80211_authenticate(struct sk_buff *skb, struct genl_info *info)
@@ -9307,7 +9340,7 @@ static int nl80211_set_wowlan(struct sk_buff *skb, struct genl_info *info)
 			u8 *mask_pat;
 
 			nla_parse(pat_tb, MAX_NL80211_PKTPAT, nla_data(pat),
-				  nla_len(pat), nl80211_packet_pattern_policy);
+				  nla_len(pat), NULL);
 			err = -EINVAL;
 			if (!pat_tb[NL80211_PKTPAT_MASK] ||
 			    !pat_tb[NL80211_PKTPAT_PATTERN])
@@ -9535,7 +9568,7 @@ static int nl80211_parse_coalesce_rule(struct cfg80211_registered_device *rdev,
 		u8 *mask_pat;
 
 		nla_parse(pat_tb, MAX_NL80211_PKTPAT, nla_data(pat),
-			  nla_len(pat), nl80211_packet_pattern_policy);
+			  nla_len(pat), NULL);
 		if (!pat_tb[NL80211_PKTPAT_MASK] ||
 		    !pat_tb[NL80211_PKTPAT_PATTERN])
 			return -EINVAL;
@@ -9661,6 +9694,9 @@ static int nl80211_set_rekey_data(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
+	if (!tb[NL80211_REKEY_DATA_REPLAY_CTR] || !tb[NL80211_REKEY_DATA_KEK] ||
+	    !tb[NL80211_REKEY_DATA_KCK])
+		return -EINVAL;
 	if (nla_len(tb[NL80211_REKEY_DATA_REPLAY_CTR]) != NL80211_REPLAY_CTR_LEN)
 		return -ERANGE;
 	if (nla_len(tb[NL80211_REKEY_DATA_KEK]) != NL80211_KEK_LEN)
@@ -9874,7 +9910,6 @@ static int nl80211_update_ft_ies(struct sk_buff *skb, struct genl_info *info)
 		return -EOPNOTSUPP;
 
 	if (!info->attrs[NL80211_ATTR_MDID] ||
-	    !info->attrs[NL80211_ATTR_IE] ||
 	    !is_valid_ie_attr(info->attrs[NL80211_ATTR_IE]))
 		return -EINVAL;
 
