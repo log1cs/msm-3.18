@@ -697,6 +697,10 @@ static void prb_retire_rx_blk_timer_expired(unsigned long data)
 
 	if (pkc->last_kactive_blk_num == pkc->kactive_blk_num) {
 		if (!frozen) {
+			if (!BLOCK_NUM_PKTS(pbd)) {
+				/* An empty block. Just refresh the timer. */
+				goto refresh_timer;
+			}
 			prb_retire_current_block(pkc, po, TP_STATUS_BLK_TMO);
 			if (!prb_dispatch_next_block(pkc, po))
 				goto refresh_timer;
@@ -796,7 +800,11 @@ static void prb_close_block(struct tpacket_kbdq_core *pkc1,
 		h1->ts_last_pkt.ts_sec = last_pkt->tp_sec;
 		h1->ts_last_pkt.ts_nsec	= last_pkt->tp_nsec;
 	} else {
-		/* Ok, we tmo'd - so get the current time */
+		/* Ok, we tmo'd - so get the current time.
+		 *
+		 * It shouldn't really happen as we don't close empty
+		 * blocks. See prb_retire_rx_blk_timer_expired().
+		 */
 		struct timespec ts;
 		getnstimeofday(&ts);
 		h1->ts_last_pkt.ts_sec = ts.tv_sec;
@@ -1380,8 +1388,6 @@ static void __fanout_link(struct sock *sk, struct packet_sock *po)
 	f->arr[f->num_members] = sk;
 	smp_wmb();
 	f->num_members++;
-	if (f->num_members == 1)
-		dev_add_pack(&f->prot_hook);
 	spin_unlock(&f->lock);
 }
 
@@ -1398,8 +1404,6 @@ static void __fanout_unlink(struct sock *sk, struct packet_sock *po)
 	BUG_ON(i >= f->num_members);
 	f->arr[i] = f->arr[f->num_members - 1];
 	f->num_members--;
-	if (f->num_members == 0)
-		__dev_remove_pack(&f->prot_hook);
 	spin_unlock(&f->lock);
 }
 
@@ -1433,12 +1437,10 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 		return -EINVAL;
 	}
 
-	mutex_lock(&fanout_mutex);
-
-	err = -EALREADY;
 	if (po->fanout)
-		goto out;
+		return -EALREADY;
 
+	mutex_lock(&fanout_mutex);
 	match = NULL;
 	list_for_each_entry(f, &fanout_list, list) {
 		if (f->id == id &&
@@ -1468,6 +1470,7 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 		match->prot_hook.func = packet_rcv_fanout;
 		match->prot_hook.af_packet_priv = match;
 		match->prot_hook.id_match = match_fanout_group;
+		dev_add_pack(&match->prot_hook);
 		list_add(&match->list, &fanout_list);
 	}
 	err = -EINVAL;
@@ -1498,32 +1501,24 @@ out:
 	return err;
 }
 
-/* If pkt_sk(sk)->fanout->sk_ref is zero, this function removes
- * pkt_sk(sk)->fanout from fanout_list and returns pkt_sk(sk)->fanout.
- * It is the responsibility of the caller to free the returned packet_fanout 
- * (after synchronize_net())
- * This Branch still does not have support classic BPF fanout mode.
- *  upstream commit 47dceb8ecdc: packet: add classic BPF fanout mode
- */
-static struct packet_fanout *fanout_release(struct sock *sk)
+static void fanout_release(struct sock *sk)
 {
 	struct packet_sock *po = pkt_sk(sk);
 	struct packet_fanout *f;
 
-	mutex_lock(&fanout_mutex);
 	f = po->fanout;
-	if (f) {
-		po->fanout = NULL;
+	if (!f)
+		return;
 
-		if (atomic_dec_and_test(&f->sk_ref))
-			list_del(&f->list);
-		else
-			f = NULL;
+	mutex_lock(&fanout_mutex);
+	po->fanout = NULL;
 
+	if (atomic_dec_and_test(&f->sk_ref)) {
+		list_del(&f->list);
+		dev_remove_pack(&f->prot_hook);
+		kfree(f);
 	}
 	mutex_unlock(&fanout_mutex);
-
-	return f;
 }
 
 static bool packet_extra_vlan_len_allowed(const struct net_device *dev,
@@ -1944,8 +1939,11 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 					copy_skb = skb_get(skb);
 					skb_head = skb->data;
 				}
-				if (copy_skb)
+				if (copy_skb) {
+					memset(&PACKET_SKB_CB(copy_skb)->sa.ll, 0,
+					       sizeof(PACKET_SKB_CB(copy_skb)->sa.ll));
 					skb_set_owner_r(copy_skb, sk);
+				}
 			}
 			snaplen = po->rx_ring.frame_size - macoff;
 			if ((int)snaplen < 0)
@@ -2605,7 +2603,6 @@ static int packet_release(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
 	struct packet_sock *po;
-	struct packet_fanout *f;
 	struct net *net;
 	union tpacket_req_u req_u;
 
@@ -2645,13 +2642,9 @@ static int packet_release(struct socket *sock)
 		packet_set_ring(sk, &req_u, 1, 1);
 	}
 
-	f = fanout_release(sk);
+	fanout_release(sk);
 
 	synchronize_net();
-
-	if (f)
-		kfree(f);
-
 	/*
 	 *	Now the socket is dead. No more input will appear.
 	 */
@@ -2998,19 +2991,34 @@ static int packet_recvmsg(struct kiocb *iocb, struct socket *sock,
 	sock_recv_ts_and_drops(msg, sk, skb);
 
 	if (msg->msg_name) {
+		const size_t max_len = min(sizeof(skb->cb),
+					   sizeof(struct sockaddr_storage));
+		int copy_len;
+
 		/* If the address length field is there to be filled
 		 * in, we fill it in now.
 		 */
 		if (sock->type == SOCK_PACKET) {
 			__sockaddr_check_size(sizeof(struct sockaddr_pkt));
 			msg->msg_namelen = sizeof(struct sockaddr_pkt);
+			copy_len = msg->msg_namelen;
 		} else {
 			struct sockaddr_ll *sll = &PACKET_SKB_CB(skb)->sa.ll;
 			msg->msg_namelen = sll->sll_halen +
 				offsetof(struct sockaddr_ll, sll_addr);
+			copy_len = msg->msg_namelen;
+			if (msg->msg_namelen < sizeof(struct sockaddr_ll)) {
+				memset(msg->msg_name +
+				       offsetof(struct sockaddr_ll, sll_addr),
+				       0, sizeof(sll->sll_addr));
+				msg->msg_namelen = sizeof(struct sockaddr_ll);
+			}
 		}
-		memcpy(msg->msg_name, &PACKET_SKB_CB(skb)->sa,
-		       msg->msg_namelen);
+		if (WARN_ON_ONCE(copy_len > max_len)) {
+			copy_len = max_len;
+			msg->msg_namelen = copy_len;
+		}
+		memcpy(msg->msg_name, &PACKET_SKB_CB(skb)->sa, copy_len);
 	}
 
 	if (pkt_sk(sk)->auxdata) {
@@ -3512,6 +3520,8 @@ static int packet_getsockopt(struct socket *sock, int level, int optname,
 	case PACKET_HDRLEN:
 		if (len > sizeof(int))
 			len = sizeof(int);
+		if (len < sizeof(int))
+			return -EINVAL;
 		if (copy_from_user(&val, optval, len))
 			return -EFAULT;
 		switch (val) {
@@ -3592,6 +3602,7 @@ static int packet_notifier(struct notifier_block *this,
 				}
 				if (msg == NETDEV_UNREGISTER) {
 					packet_cached_dev_reset(po);
+					fanout_release(sk);
 					po->ifindex = -1;
 					if (po->prot_hook.dev)
 						dev_put(po->prot_hook.dev);
