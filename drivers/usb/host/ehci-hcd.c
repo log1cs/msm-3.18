@@ -1,3 +1,4 @@
+/* 2017-05-25: File changed by Sony Corporation */
 /*
  * Enhanced Host Controller Interface (EHCI) driver for USB.
  *
@@ -1397,7 +1398,12 @@ err_debug:
 	clear_bit(USB_EHCI_LOADED, &usb_hcds_loaded);
 	return retval;
 }
+#ifdef CONFIG_SNSC_DEFERRED_INITCALLS_USB
+deferred_initcall(ehci_hcd_init,
+		  CONFIG_SNSC_DEFERRED_INITCALLS_GROUP_USB_HCD);
+#else
 module_init(ehci_hcd_init);
+#endif
 
 static void __exit ehci_hcd_cleanup(void)
 {

@@ -1,3 +1,4 @@
+/* 2019-05-30: File changed by Sony Corporation */
 /*
  * drivers/usb/driver.c - most of the driver model stuff for usb
  *
@@ -1424,7 +1425,12 @@ int usb_suspend(struct device *dev, pm_message_t msg)
 {
 	struct usb_device	*udev = to_usb_device(dev);
 
-	if (udev->bus->skip_resume && udev->state == USB_STATE_SUSPENDED)
+	/* Skip usb suspend in PM suspend.usb_resume() is always skipped, so
+	 * can_submit flag is always changed to 1 runtime resume.
+	 * But in usb_suspend sometime change can_submit to 0 after runtime resume,
+	 * so somtimes can_submit flag remains 0.
+	 */
+	if (udev->bus->skip_resume)
 		return 0;
 
 	unbind_no_pm_drivers_interfaces(udev);
@@ -1758,6 +1764,9 @@ static int autosuspend_check(struct usb_device *udev)
 {
 	int			w, i;
 	struct usb_interface	*intf;
+
+	if (udev->state == USB_STATE_NOTATTACHED)
+		return -ENODEV;
 
 	/* Fail if autosuspend is disabled, or any interfaces are in use, or
 	 * any interface drivers require remote wakeup but it isn't available.
