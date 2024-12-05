@@ -1,3 +1,4 @@
+/* 2017-06-21: File changed by Sony Corporation */
 /*
  *  Code extracted from drivers/block/genhd.c
  *  Copyright (C) 1991-1998  Linus Torvalds
@@ -427,6 +428,9 @@ int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 	struct parsed_partitions *state = NULL;
 	struct hd_struct *part;
 	int p, highest, res;
+#ifdef CONFIG_SNSC_FS_CLEAR_MAPPING_ERRORS
+	struct block_device *pdev;
+#endif
 rescan:
 	if (state && !IS_ERR(state)) {
 		free_partitions(state);
@@ -441,6 +445,10 @@ rescan:
 		disk->fops->revalidate_disk(disk);
 	check_disk_size_change(disk, bdev);
 	bdev->bd_invalidated = 0;
+#ifdef CONFIG_SNSC_FS_CLEAR_MAPPING_ERRORS
+	clear_bit(AS_EIO, &bdev->bd_inode->i_mapping->flags);
+	clear_bit(AS_ENOSPC, &bdev->bd_inode->i_mapping->flags);
+#endif
 	if (!get_capacity(disk) || !(state = check_partition(disk, bdev)))
 		return 0;
 	if (IS_ERR(state)) {
@@ -531,6 +539,14 @@ rescan:
 			       disk->disk_name, p, -PTR_ERR(part));
 			continue;
 		}
+#ifdef CONFIG_SNSC_FS_CLEAR_MAPPING_ERRORS
+		pdev = bdget_disk(disk, p);
+		if (pdev) {
+			clear_bit(AS_EIO, &pdev->bd_inode->i_mapping->flags);
+			clear_bit(AS_ENOSPC, &pdev->bd_inode->i_mapping->flags);
+			bdput(pdev);
+		}
+#endif
 #ifdef CONFIG_BLK_DEV_MD
 		if (state->parts[p].flags & ADDPART_FLAG_RAID)
 			md_autodetect_dev(part_to_dev(part)->devt);
