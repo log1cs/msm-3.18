@@ -46,7 +46,6 @@
 #include "truncate.h"
 
 #include <trace/events/ext4.h>
-#include <trace/events/android_fs.h>
 
 #define MPAGE_DA_EXTENT_TAIL 0x01
 
@@ -662,20 +661,6 @@ has_zeroout:
 		ret = check_block_validity(inode, map);
 		if (ret != 0)
 			return ret;
-
-		/*
-		 * Inodes with freshly allocated blocks where contents will be
-		 * visible after transaction commit must be on transaction's
-		 * ordered data list.
-		 */
-		if (map->m_flags & EXT4_MAP_NEW &&
-		    !(map->m_flags & EXT4_MAP_UNWRITTEN) &&
-		    !IS_NOQUOTA(inode) &&
-		    ext4_should_order_data(inode)) {
-			ret = ext4_jbd2_file_inode(handle, inode);
-			if (ret)
-				return ret;
-		}
 	}
 	return retval;
 }
@@ -995,16 +980,6 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 	pgoff_t index;
 	unsigned from, to;
 
-	if (trace_android_fs_datawrite_start_enabled()) {
-		char *path, pathbuf[MAX_TRACE_PATHBUF_LEN];
-
-		path = android_fstrace_get_pathname(pathbuf,
-						    MAX_TRACE_PATHBUF_LEN,
-						    inode);
-		trace_android_fs_datawrite_start(inode, pos, len,
-						 current->pid, path,
-						 current->comm);
-	}
 	trace_ext4_write_begin(inode, pos, len, flags);
 	/*
 	 * Reserve one block more for addition to orphan list in case
@@ -1140,8 +1115,16 @@ static int ext4_write_end(struct file *file,
 	int ret = 0, ret2;
 	int i_size_changed = 0;
 
-	trace_android_fs_datawrite_end(inode, pos, len);
 	trace_ext4_write_end(inode, pos, len, copied);
+	if (ext4_test_inode_state(inode, EXT4_STATE_ORDERED_MODE)) {
+		ret = ext4_jbd2_file_inode(handle, inode);
+		if (ret) {
+			unlock_page(page);
+			page_cache_release(page);
+			goto errout;
+		}
+	}
+
 	if (ext4_has_inline_data(inode)) {
 		ret = ext4_write_inline_data_end(inode, pos, len,
 						 copied, page);
@@ -1205,7 +1188,6 @@ static int ext4_journalled_write_end(struct file *file,
 	unsigned from, to;
 	int size_changed = 0;
 
-	trace_android_fs_datawrite_end(inode, pos, len);
 	trace_ext4_journalled_write_end(inode, pos, len, copied);
 	from = pos & (PAGE_CACHE_SIZE - 1);
 	to = from + len;
@@ -1906,15 +1888,29 @@ static int ext4_writepage(struct page *page,
 static int mpage_submit_page(struct mpage_da_data *mpd, struct page *page)
 {
 	int len;
-	loff_t size = i_size_read(mpd->inode);
+	loff_t size;
 	int err;
 
 	BUG_ON(page->index != mpd->first_page);
-	if (page->index == size >> PAGE_CACHE_SHIFT)
-		len = size & ~PAGE_CACHE_MASK;
-	else
-		len = PAGE_CACHE_SIZE;
 	clear_page_dirty_for_io(page);
+	/*
+	 * We have to be very careful here!  Nothing protects writeback path
+	 * against i_size changes and the page can be writeably mapped into
+	 * page tables. So an application can be growing i_size and writing
+	 * data through mmap while writeback runs. clear_page_dirty_for_io()
+	 * write-protects our page in page tables and the page cannot get
+	 * written to again until we release page lock. So only after
+	 * clear_page_dirty_for_io() we are safe to sample i_size for
+	 * ext4_bio_write_page() to zero-out tail of the written page. We rely
+	 * on the barrier provided by TestClearPageDirty in
+	 * clear_page_dirty_for_io() to make sure i_size is really sampled only
+	 * after page tables are updated.
+	 */
+	size = i_size_read(mpd->inode);
+	if (page->index == size >> PAGE_SHIFT)
+		len = size & ~PAGE_MASK;
+	else
+		len = PAGE_SIZE;
 	err = ext4_bio_write_page(&mpd->io_submit, page, len, mpd->wbc, false);
 	if (!err)
 		mpd->wbc->nr_to_write--;
@@ -2700,16 +2696,6 @@ static int ext4_da_write_begin(struct file *file, struct address_space *mapping,
 					len, flags, pagep, fsdata);
 	}
 	*fsdata = (void *)0;
-	if (trace_android_fs_datawrite_start_enabled()) {
-		char *path, pathbuf[MAX_TRACE_PATHBUF_LEN];
-
-		path = android_fstrace_get_pathname(pathbuf,
-						    MAX_TRACE_PATHBUF_LEN,
-						    inode);
-		trace_android_fs_datawrite_start(inode, pos, len,
-						 current->pid,
-						 path, current->comm);
-	}
 	trace_ext4_da_write_begin(inode, pos, len, flags);
 
 	if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA)) {
@@ -2828,7 +2814,6 @@ static int ext4_da_write_end(struct file *file,
 		return ext4_write_end(file, mapping, pos,
 				      len, copied, page, fsdata);
 
-	trace_android_fs_datawrite_end(inode, pos, len);
 	trace_ext4_da_write_end(inode, pos, len, copied);
 	start = pos & (PAGE_CACHE_SIZE - 1);
 	end = start + copied - 1;
@@ -3305,39 +3290,12 @@ static ssize_t ext4_direct_IO(int rw, struct kiocb *iocb,
 	if (ext4_has_inline_data(inode))
 		return 0;
 
-	if (trace_android_fs_dataread_start_enabled() && (rw == READ)) {
-		char *path, pathbuf[MAX_TRACE_PATHBUF_LEN];
-
-		path = android_fstrace_get_pathname(pathbuf,
-						    MAX_TRACE_PATHBUF_LEN,
-						    inode);
-		trace_android_fs_dataread_start(inode, offset, count,
-						current->pid, path,
-						current->comm);
-	}
-	if (trace_android_fs_datawrite_start_enabled() && (rw == WRITE)) {
-		char *path, pathbuf[MAX_TRACE_PATHBUF_LEN];
-
-		path = android_fstrace_get_pathname(pathbuf,
-						    MAX_TRACE_PATHBUF_LEN,
-						    inode);
-		trace_android_fs_datawrite_start(inode, offset, count,
-						 current->pid, path,
-						 current->comm);
-	}
-
 	trace_ext4_direct_IO_enter(inode, offset, count, rw);
 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
 		ret = ext4_ext_direct_IO(rw, iocb, iter, offset);
 	else
 		ret = ext4_ind_direct_IO(rw, iocb, iter, offset);
 	trace_ext4_direct_IO_exit(inode, offset, count, rw, ret);
-
-	if (trace_android_fs_dataread_start_enabled() && (rw == READ))
-		trace_android_fs_dataread_end(inode, offset, count);
-	if (trace_android_fs_datawrite_start_enabled() && (rw == WRITE))
-		trace_android_fs_datawrite_end(inode, offset, count);
-
 	return ret;
 }
 
@@ -3547,11 +3505,6 @@ static int ext4_block_truncate_page(handle_t *handle,
 	unsigned blocksize;
 	struct inode *inode = mapping->host;
 
-	/* If we are processing an encrypted inode during orphan list
-	 * handling */
-	if (ext4_encrypted_inode(inode) && !ext4_has_encryption_key(inode))
-		return 0;
-
 	blocksize = inode->i_sb->s_blocksize;
 	length = blocksize - (offset & (blocksize - 1));
 
@@ -3628,6 +3581,10 @@ int ext4_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 	handle_t *handle;
 	unsigned int credits;
 	int ret = 0;
+
+	/* WORKAROUND: EXTENTS required (LP: #1292234) */
+	if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)))
+		return -EOPNOTSUPP;
 
 	if (!S_ISREG(inode->i_mode))
 		return -EOPNOTSUPP;
@@ -4731,8 +4688,10 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 		ext4_journal_stop(handle);
 	}
 
-	if (attr->ia_valid & ATTR_SIZE && attr->ia_size != inode->i_size) {
+	if (attr->ia_valid & ATTR_SIZE) {
 		handle_t *handle;
+		loff_t oldsize = inode->i_size;
+		int shrink = (attr->ia_size <= inode->i_size);
 
 		if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))) {
 			struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
@@ -4740,24 +4699,26 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 			if (attr->ia_size > sbi->s_bitmap_maxbytes)
 				return -EFBIG;
 		}
+		if (!S_ISREG(inode->i_mode))
+			return -EINVAL;
 
 		if (IS_I_VERSION(inode) && attr->ia_size != inode->i_size)
 			inode_inc_iversion(inode);
 
-		if (S_ISREG(inode->i_mode) &&
+		if (ext4_should_order_data(inode) &&
 		    (attr->ia_size < inode->i_size)) {
-			if (ext4_should_order_data(inode)) {
-				error = ext4_begin_ordered_truncate(inode,
+			error = ext4_begin_ordered_truncate(inode,
 							    attr->ia_size);
-				if (error)
-					goto err_out;
-			}
+			if (error)
+				goto err_out;
+		}
+		if (attr->ia_size != inode->i_size) {
 			handle = ext4_journal_start(inode, EXT4_HT_INODE, 3);
 			if (IS_ERR(handle)) {
 				error = PTR_ERR(handle);
 				goto err_out;
 			}
-			if (ext4_handle_valid(handle)) {
+			if (ext4_handle_valid(handle) && shrink) {
 				error = ext4_orphan_add(handle, inode);
 				orphan = 1;
 			}
@@ -4776,15 +4737,13 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 			up_write(&EXT4_I(inode)->i_data_sem);
 			ext4_journal_stop(handle);
 			if (error) {
-				ext4_orphan_del(NULL, inode);
+				if (orphan)
+					ext4_orphan_del(NULL, inode);
 				goto err_out;
 			}
-		} else {
-			loff_t oldsize = inode->i_size;
-
-			i_size_write(inode, attr->ia_size);
-			pagecache_isize_extended(inode, oldsize, inode->i_size);
 		}
+		if (!shrink)
+			pagecache_isize_extended(inode, oldsize, inode->i_size);
 
 		/*
 		 * Blocks are going to be removed from the inode. Wait
@@ -4803,14 +4762,10 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 		 * Truncate pagecache after we've waited for commit
 		 * in data=journal mode to make pages freeable.
 		 */
-			truncate_pagecache(inode, inode->i_size);
+		truncate_pagecache(inode, inode->i_size);
+		if (shrink)
+			ext4_truncate(inode);
 	}
-	/*
-	 * We want to call ext4_truncate() even if attr->ia_size ==
-	 * inode->i_size for cases like truncation of fallocated space
-	 */
-	if (attr->ia_valid & ATTR_SIZE)
-		ext4_truncate(inode);
 
 	if (!rc) {
 		setattr_copy(inode, attr);
@@ -5080,8 +5035,6 @@ int ext4_mark_inode_dirty(handle_t *handle, struct inode *inode)
 						      sbi->s_want_extra_isize,
 						      iloc, handle);
 			if (ret) {
-				ext4_set_inode_state(inode,
-						     EXT4_STATE_NO_EXPAND);
 				if (mnt_count !=
 					le16_to_cpu(sbi->s_es->s_mnt_count)) {
 					ext4_warning(inode->i_sb,
@@ -5110,17 +5063,11 @@ int ext4_mark_inode_dirty(handle_t *handle, struct inode *inode)
  * If the inode is marked synchronous, we don't honour that here - doing
  * so would cause a commit on atime updates, which we don't bother doing.
  * We handle synchronous inodes at the highest possible level.
- *
- * If only the I_DIRTY_TIME flag is set, we can skip everything.  If
- * I_DIRTY_TIME and I_DIRTY_SYNC is set, the only inode fields we need
- * to copy into the on-disk inode structure are the timestamp files.
  */
 void ext4_dirty_inode(struct inode *inode, int flags)
 {
 	handle_t *handle;
 
-	if (flags == I_DIRTY_TIME)
-		return;
 	handle = ext4_journal_start(inode, EXT4_HT_INODE, 2);
 	if (IS_ERR(handle))
 		goto out;
