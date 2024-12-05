@@ -1,9 +1,14 @@
+/* 2016-11-15: File changed by Sony Corporation */
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/utsname.h>
+
+#ifdef CONFIG_SNSC
+extern int __init nlver_init(void);
+#endif
 
 static int version_proc_show(struct seq_file *m, void *v)
 {
@@ -29,6 +34,12 @@ static const struct file_operations version_proc_fops = {
 static int __init proc_version_init(void)
 {
 	proc_create("version", 0, NULL, &version_proc_fops);
+
+#ifdef CONFIG_SNSC
+        /* NSC Linux version */
+        nlver_init();
+#endif
+
 	return 0;
 }
 fs_initcall(proc_version_init);
