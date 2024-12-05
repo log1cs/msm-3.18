@@ -1,3 +1,4 @@
+/* 2017-05-08: File changed by Sony Corporation */
 /*
  * Many of the syscalls used in this file expect some of the arguments
  * to be __user pointers not __kernel pointers.  To limit the sparse
@@ -17,6 +18,7 @@
 #include <linux/sched.h>
 #include <linux/freezer.h>
 #include <linux/kmod.h>
+#include <linux/snsc_boot_time.h>
 
 #include "do_mounts.h"
 
@@ -71,6 +73,8 @@ static void __init handle_initrd(void)
 	 */
 	current->flags |= PF_FREEZER_SKIP;
 
+	BOOT_TIME_ADD1("linuxrc start");
+
 	info = call_usermodehelper_setup("/linuxrc", argv, envp_init,
 					 GFP_KERNEL, init_linuxrc, NULL, NULL);
 	if (!info)
@@ -88,6 +92,7 @@ static void __init handle_initrd(void)
 		sys_chdir("/old");
 		return;
 	}
+	BOOT_TIME_ADD1("linuxrc end");
 
 	sys_chdir("/");
 	ROOT_DEV = new_decode_dev(real_root_dev);
