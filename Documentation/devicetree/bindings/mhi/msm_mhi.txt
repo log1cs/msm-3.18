@@ -17,7 +17,7 @@ Main node properties:
   Definition: "qcom,mhi"
 
 - qcom,pci-dev_id
-  Usage: optional
+  Usage: required
   Value type: <u32>
   Definition: Device id reported by modem
 
