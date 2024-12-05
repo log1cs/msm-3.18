@@ -1,3 +1,4 @@
+/* 2017-02-09: File changed by Sony Corporation */
 /*
  *  linux/drivers/mmc/sdio.c
  *
@@ -228,8 +229,7 @@ static void sdio_enable_vendor_specific_settings(struct mmc_card *card)
 	u8 settings;
 
 	if (mmc_enable_qca6574_settings(card) ||
-		mmc_enable_qca9377_settings(card) ||
-		mmc_enable_qca9379_settings(card)) {
+		mmc_enable_qca9377_settings(card)) {
 		ret = mmc_io_rw_direct(card, 1, 0, 0xF2, 0x0F, NULL);
 		if (ret) {
 			pr_crit("%s: failed to write to fn 0xf2 %d\n",
@@ -644,11 +644,17 @@ static int mmc_sdio_init_uhs_card(struct mmc_card *card)
 	 * SPI mode doesn't define CMD19 and tuning is only valid for SDR50 and
 	 * SDR104 mode SD-cards. Note that tuning is mandatory for SDR104.
 	 */
-	if (!mmc_host_is_spi(card->host) &&
-	    ((card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR50) ||
-	     (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104)))
-		err = mmc_execute_tuning(card);
+	if (!mmc_host_is_spi(card->host) && card->host->ops->execute_tuning &&
+			((card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR50) ||
+			 (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104))) {
+		mmc_host_clk_hold(card->host);
+		err = card->host->ops->execute_tuning(card->host,
+						      MMC_SEND_TUNING_BLOCK);
+		mmc_host_clk_release(card->host);
+	}
+
 out:
+
 	return err;
 }
 
@@ -743,7 +749,7 @@ try_again:
 	 */
 	if (!powered_resume && (rocr & ocr & R4_18V_PRESENT)) {
 		err = mmc_set_signal_voltage(host, MMC_SIGNAL_VOLTAGE_180,
-					ocr_card);
+					ocr);
 		if (err == -EAGAIN) {
 			sdio_reset(host);
 			mmc_go_idle(host);
@@ -938,8 +944,21 @@ static void mmc_sdio_remove(struct mmc_host *host)
 	}
 
 	mmc_remove_card(host->card);
+	/* clear rescan_entered in case force remove */
+	host->rescan_entered = 0;
 	host->card = NULL;
 }
+
+void mmc_sdio_force_remove(struct mmc_host *host)
+{
+	mmc_sdio_remove(host);
+
+	mmc_claim_host(host);
+	mmc_detach_bus(host);
+	mmc_power_off(host);
+	mmc_release_host(host);
+}
+EXPORT_SYMBOL_GPL(mmc_sdio_force_remove);
 
 /*
  * Card detection - card is alive.

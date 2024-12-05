@@ -1,3 +1,4 @@
+/* 2017-02-09: File changed by Sony Corporation */
 /*
  *  linux/drivers/mmc/sdio_ops.c
  *
