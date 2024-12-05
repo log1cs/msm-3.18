@@ -6,6 +6,10 @@ SMP=$3
 PREEMPT=$4
 CC=$5
 
+if test -e include/config/auto.conf; then
+	. include/config/auto.conf
+fi
+
 vecho() { [ "${quiet}" = "silent_" ] || echo "$@" ; }
 
 # If compile.h exists already and we don't own autoconf.h
@@ -77,6 +81,11 @@ UTS_TRUNCATE="cut -b -$UTS_LEN"
   echo \#define LINUX_COMPILE_HOST \"`echo $LINUX_COMPILE_HOST | $UTS_TRUNCATE`\"
 
   echo \#define LINUX_COMPILER \"`$CC -v 2>&1 | grep ' version '`\"
+
+	if test "$CONFIG_SNSC_BUILTIN_TIMESTAMP" = "y"; then
+	  TIMESTAMP_IN_SEC=`date -u --date="$TIMESTAMP" +%s`
+	  echo \#define SNSC_UTS_BUILTIN_TIME \"`echo $TIMESTAMP_IN_SEC`\"
+	fi
 ) > .tmpcompile
 
 # Only replace the real compile.h if the new one is different,
