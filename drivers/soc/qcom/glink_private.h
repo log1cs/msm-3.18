@@ -1,3 +1,4 @@
+/* 2017-04-20: File changed by Sony Corporation */
 /* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,6 +30,9 @@ struct glink_core_xprt_ctx;
 struct channel_ctx;
 enum transport_state_e;
 enum local_channel_state_e;
+#ifdef CONFIG_MSM_KEXEC
+extern void *rpm_handle;
+#endif
 
 /* Logging Macros */
 enum {
