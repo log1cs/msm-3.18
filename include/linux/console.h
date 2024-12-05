@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  linux/include/linux/console.h
  *
@@ -124,6 +125,7 @@ struct console {
 	void	(*unblank)(void);
 	int	(*setup)(struct console *, char *);
 	int	(*early_setup)(void);
+	int     (*flush_tty)(struct console *);
 	short	flags;
 	short	index;
 	int	cflag;

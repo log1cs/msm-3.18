@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -e
+
+scripts/setconfig.py -f - <<_EOF_
+CONFIG_SNSC_LCTRACER=y
+CONFIG_SNSC_LCTRACER_BUF_SIZE_KB=4096
+CONFIG_SNSC_LCTRACER_FILE_PATH="/var/log/lctracer"
+_EOF_

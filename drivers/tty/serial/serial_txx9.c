@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  * Derived from many drivers using generic_serial interface,
  * especially serial_tx3912.c by Steven J. Hill and r39xx_serial.c
@@ -959,10 +960,50 @@ static int __init serial_txx9_console_setup(struct console *co, char *options)
 	return uart_set_options(port, co, baud, parity, bits, flow);
 }
 
+#ifdef CONFIG_CONSOLE_READ
+static int serial_txx9_console_read(struct console *co, char *s, unsigned int count)
+{
+	struct uart_txx9_port *up = &serial_txx9_ports[co->index];
+	unsigned int ier, flcr;
+	int i;
+
+	/*
+	 *	First save the UER then disable the interrupts
+	 */
+	ier = sio_in(up, TXX9_SIDICR);
+	sio_out(up, TXX9_SIDICR, 0);
+	/*
+	 *	Disable flow-control if enabled (and unnecessary)
+	 */
+	flcr = sio_in(up, TXX9_SIFLCR);
+	if (!(up->port.flags & UPF_CONS_FLOW) && (flcr & TXX9_SIFLCR_TES))
+		sio_out(up, TXX9_SIFLCR, flcr & ~TXX9_SIFLCR_TES);
+
+	/* Now, do each character read */
+	for (i = 0; i < count; i++) {
+		while ((sio_in(up, TXX9_SIDISR) & TXX9_SIDISR_RDIS) == 0)
+			;
+		*s++ = sio_in(up, TXX9_SIRFIFO);
+	}
+
+	/*
+	 *	Finally, wait for transmitter to become empty
+	 *	and restore the IER
+	 */
+	sio_out(up, TXX9_SIFLCR, flcr);
+	sio_out(up, TXX9_SIDICR, ier);
+
+	return i;
+}
+#endif
+
 static struct uart_driver serial_txx9_reg;
 static struct console serial_txx9_console = {
 	.name		= TXX9_TTY_NAME,
 	.write		= serial_txx9_console_write,
+#ifdef CONFIG_CONSOLE_READ
+	.read		= serial_txx9_console_read,
+#endif
 	.device		= uart_console_device,
 	.setup		= serial_txx9_console_setup,
 	.flags		= CON_PRINTBUFFER,

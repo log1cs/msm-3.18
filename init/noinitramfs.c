@@ -24,6 +24,8 @@
 #include <linux/kconfig.h>
 #include <linux/initramfs.h>
 
+LIST_HEAD(populate_rootfs_domain);
+
 /*
  * Create a simple rootfs that is similar to the default initramfs
  */

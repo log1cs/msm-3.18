@@ -1,0 +1,17 @@
+config OPENQ_PLATFORM
+        bool "OpenQ development platform"
+
+	config MACH_OPENQ820
+	        depends on ARCH_MSM8996
+	        depends on OPENQ_PLATFORM
+	        bool "OpenQ820"
+	        default n
+	        help
+	          Support for OpenQ820 with APQ8096v3 chip-set.
+
+	config MSM_KEXEC
+	        depends on KEXEC
+	        bool "Kexec on MSM"
+	        default n
+	        help
+	          Support Kexec on MSM8996 based boards.

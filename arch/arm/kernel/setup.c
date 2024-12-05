@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  linux/arch/arm/kernel/setup.c
  *
@@ -39,6 +40,7 @@
 #include <asm/elf.h>
 #include <asm/procinfo.h>
 #include <asm/psci.h>
+#include <linux/snsc_boot_time.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/smp_plat.h>
@@ -951,6 +953,10 @@ void __init setup_arch(char **cmdline_p)
 	arm_memblock_init(mdesc);
 
 	paging_init(mdesc);
+#ifdef CONFIG_SNSC_BOOT_TIME
+	boot_time_init();
+	BOOT_TIME_ADD();
+#endif
 	request_standard_resources(mdesc);
 
 	if (mdesc->restart)
@@ -1152,6 +1158,18 @@ const struct seq_operations cpuinfo_op = {
 	.stop	= c_stop,
 	.show	= c_show
 };
+
+#ifdef CONFIG_EXCEPTION_MONITOR
+int exception_check_mode = 3;
+static int __init set_exception_check(char *str)
+{
+	get_option(&str, &exception_check_mode);
+	return 1;
+}
+__setup("em=", set_exception_check);
+void (*exception_check)(int mode, struct pt_regs *regs) = NULL;
+EXPORT_SYMBOL(exception_check);
+#endif
 
 void arch_setup_pdev_archdata(struct platform_device *pdev)
 {

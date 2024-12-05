@@ -1,3 +1,4 @@
+/* 2017-06-14: File changed by Sony Corporation */
 /*
  * Simple synchronous userspace interface to SPI devices
  *
@@ -92,7 +93,13 @@ struct spidev_data {
 static LIST_HEAD(device_list);
 static DEFINE_MUTEX(device_list_lock);
 
+
+#if CONFIG_MACH_AL0
+static unsigned bufsiz = 32768;
+#else
 static unsigned bufsiz = 4096;
+#endif /* CONFIG_MACH_AL0 */
+
 module_param(bufsiz, uint, S_IRUGO);
 MODULE_PARM_DESC(bufsiz, "data bytes in biggest supported SPI message");
 

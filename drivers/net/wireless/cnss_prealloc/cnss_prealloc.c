@@ -20,7 +20,6 @@
 #include <linux/skbuff.h>
 #endif
 #include <linux/debugfs.h>
-#include <net/cnss_prealloc.h>
 
 static DEFINE_SPINLOCK(alloc_lock);
 
@@ -235,6 +234,7 @@ void *wcnss_prealloc_get(unsigned int size)
 
 	pr_err("wcnss: %s: prealloc not available for size: %d\n",
 			__func__, size);
+	WARN_ON(1);
 
 	return NULL;
 }

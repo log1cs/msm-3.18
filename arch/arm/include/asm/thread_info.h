@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  arch/arm/include/asm/thread_info.h
  *
@@ -21,6 +22,11 @@
 #define THREAD_START_SP		(THREAD_SIZE - 8)
 
 #ifndef __ASSEMBLY__
+
+#ifndef CONFIG_SNSC_MULTI_STACK_SIZES
+#define DEF_STACK_SIZE   THREAD_SIZE
+#define calc_stack_size(p) (DEF_STACK_SIZE)
+#endif
 
 struct task_struct;
 struct exec_domain;
@@ -80,11 +86,6 @@ struct thread_info {
 
 #define init_thread_info	(init_thread_union.thread_info)
 #define init_stack		(init_thread_union.stack)
-
-/*
- * how to get the current stack pointer in C
- */
-register unsigned long current_stack_pointer asm ("sp");
 
 /*
  * how to get the thread information struct from C

@@ -1,3 +1,4 @@
+/* 2017-10-27: File changed by Sony Corporation */
 /*
  * USB Network driver infrastructure
  * Copyright (C) 2000-2005 by David Brownell
@@ -1568,7 +1569,7 @@ static void usbnet_bh (unsigned long param)
 		int	temp = dev->rxq.qlen;
 
 		if (temp < RX_QLEN(dev)) {
-			if (rx_alloc_submit(dev, GFP_KERNEL) == -ENOLINK)
+			if (rx_alloc_submit(dev, GFP_ATOMIC) == -ENOLINK)
 				return;
 			if (temp != dev->rxq.qlen)
 				netif_dbg(dev, link, dev->net,

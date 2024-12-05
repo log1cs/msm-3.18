@@ -1,3 +1,4 @@
+/* 2017-05-08: File changed by Sony Corporation */
 /*
  * Many of the syscalls used in this file expect some of the arguments
  * to be __user pointers not __kernel pointers.  To limit the sparse
@@ -32,6 +33,8 @@
 #include <linux/nfs_fs.h>
 #include <linux/nfs_fs_sb.h>
 #include <linux/nfs_mount.h>
+
+#include <linux/snsc_boot_time.h>
 
 #include "do_mounts.h"
 
@@ -207,7 +210,7 @@ done:
  *	bangs.
  */
 
-dev_t name_to_dev_t(const char *name)
+dev_t name_to_dev_t(char *name)
 {
 	char s[32];
 	char *p;
@@ -286,7 +289,6 @@ fail:
 done:
 	return res;
 }
-EXPORT_SYMBOL_GPL(name_to_dev_t);
 
 static int __init root_dev_setup(char *line)
 {
@@ -571,6 +573,7 @@ void __init prepare_namespace(void)
 			root_device_name += 5;
 	}
 
+	BOOT_TIME_ADD1("Check initrd_load()");
 	if (initrd_load())
 		goto out;
 
@@ -589,11 +592,14 @@ void __init prepare_namespace(void)
 	if (is_floppy && rd_doload && rd_load_disk(0))
 		ROOT_DEV = Root_RAM0;
 
+	BOOT_TIME_ADD1("mount_root()");
 	mount_root();
 out:
 	devtmpfs_mount("dev");
+	BOOT_TIME_ADD1("sys_mount(\"/\")");
 	sys_mount(".", "/", NULL, MS_MOVE, NULL);
 	sys_chroot(".");
+	BOOT_TIME_ADD1("prepare_namespace() end");
 }
 
 static bool is_tmpfs;

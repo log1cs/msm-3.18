@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,7 +18,6 @@
 #include <linux/jiffies.h>
 #include <linux/phy.h>
 #include <linux/of.h>
-#include <linux/qca8337.h>
 
 #include "emac_hw.h"
 #include "emac_ptp.h"
@@ -533,28 +532,21 @@ void emac_hw_start_mac(struct emac_hw *hw)
 
 	/* setup link speed */
 	mac &= ~SPEED_MASK;
-
-	if (QCA8337_PHY_ID == phydev->phy_id) {
+	switch (phydev->speed) {
+	case SPEED_1000:
 		mac |= SPEED(2);
 		csr1 |= FREQ_MODE;
-		mac |= FULLD;
-	} else {
-		switch (phydev->speed) {
-		case SPEED_1000:
-			mac |= SPEED(2);
-			csr1 |= FREQ_MODE;
-			break;
-		default:
-			mac |= SPEED(1);
-			csr1 &= ~FREQ_MODE;
-			break;
-		}
-
-		if (phydev->duplex == DUPLEX_FULL)
-			mac |= FULLD;
-		else
-			mac &= ~FULLD;
+		break;
+	default:
+		mac |= SPEED(1);
+		csr1 &= ~FREQ_MODE;
+		break;
 	}
+
+	if (phydev->duplex == DUPLEX_FULL)
+		mac |= FULLD;
+	else
+		mac &= ~FULLD;
 
 	/* other parameters */
 	mac |= (CRCE | PCRCE);

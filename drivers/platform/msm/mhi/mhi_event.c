@@ -226,7 +226,8 @@ int init_local_ev_ring_by_type(struct mhi_device_ctxt *mhi_dev_ctxt,
 	mhi_log(mhi_dev_ctxt, MHI_MSG_INFO, "Entered\n");
 	for (i = 0; i < mhi_dev_ctxt->mmio_info.nr_event_rings; i++) {
 		if (GET_EV_PROPS(EV_TYPE,
-			mhi_dev_ctxt->ev_ring_props[i].flags) == type) {
+			mhi_dev_ctxt->ev_ring_props[i].flags) == type &&
+		    !mhi_dev_ctxt->ev_ring_props[i].state) {
 			ret_val = mhi_init_local_event_ring(mhi_dev_ctxt,
 					mhi_dev_ctxt->ev_ring_props[i].nr_desc,
 					i);
@@ -291,6 +292,7 @@ int mhi_init_local_event_ring(struct mhi_device_ctxt *mhi_dev_ctxt,
 			break;
 		}
 	}
+	mhi_dev_ctxt->ev_ring_props[ring_index].state = MHI_EVENT_RING_INIT;
 	spin_unlock_irqrestore(lock, flags);
 	return ret_val;
 }
@@ -307,7 +309,6 @@ void mhi_reset_ev_ctxt(struct mhi_device_ctxt *mhi_dev_ctxt,
 	    &mhi_dev_ctxt->dev_space.ring_ctxt.ec_list[index];
 	local_ev_ctxt =
 	    &mhi_dev_ctxt->mhi_local_event_ctxt[index];
-	spin_lock_irq(&local_ev_ctxt->ring_lock);
 	ev_ctxt->mhi_event_read_ptr = ev_ctxt->mhi_event_ring_base_addr;
 	ev_ctxt->mhi_event_write_ptr = ev_ctxt->mhi_event_ring_base_addr;
 	local_ev_ctxt->rp = local_ev_ctxt->base;
@@ -316,5 +317,6 @@ void mhi_reset_ev_ctxt(struct mhi_device_ctxt *mhi_dev_ctxt,
 	ev_ctxt = &mhi_dev_ctxt->dev_space.ring_ctxt.ec_list[index];
 	ev_ctxt->mhi_event_read_ptr = ev_ctxt->mhi_event_ring_base_addr;
 	ev_ctxt->mhi_event_write_ptr = ev_ctxt->mhi_event_ring_base_addr;
-	spin_unlock_irq(&local_ev_ctxt->ring_lock);
+	/* Flush writes to MMIO */
+	wmb();
 }

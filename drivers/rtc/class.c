@@ -1,3 +1,4 @@
+/* 2017-11-08: File changed by Sony Corporation */
 /*
  * RTC subsystem, base class
  *
@@ -55,7 +56,7 @@ static int rtc_suspend(struct device *dev)
 	struct timespec		delta, delta_delta;
 	int err;
 
-	if (timekeeping_rtc_skipsuspend())
+	if (has_persistent_clock())
 		return 0;
 
 	if (strcmp(dev_name(&rtc->dev), CONFIG_RTC_HCTOSYS_DEVICE) != 0)
@@ -102,7 +103,7 @@ static int rtc_resume(struct device *dev)
 	struct timespec		sleep_time;
 	int err;
 
-	if (timekeeping_rtc_skipresume())
+	if (has_persistent_clock())
 		return 0;
 
 	rtc_hctosys_ret = -ENODEV;
@@ -145,6 +146,15 @@ static int rtc_resume(struct device *dev)
 	if (sleep_time.tv_sec >= 0)
 		timekeeping_inject_sleeptime(&sleep_time);
 	rtc_hctosys_ret = 0;
+
+#ifdef CONFIG_AL0_RTC_HCTOSYS
+	err = do_settimeofday(&new_rtc);
+	if (err < 0) {
+		rtc_hctosys_ret = err;
+		pr_debug("%s:  fail to set system time\n", dev_name(&rtc->dev));
+	}
+#endif
+
 	return 0;
 }
 

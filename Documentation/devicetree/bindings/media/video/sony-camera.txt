@@ -1,0 +1,130 @@
+* Sony Camera
+
+Required properties:
+- cell-index: cci hardware core index
+- compatible :
+    - "qcom,sony_camera_0"
+    - "qcom,sony_camera_1"
+    - "qcom,sony_camera_2"
+- reg : should contain i2c slave address of the device
+- qcom,csiphy-sd-index : should contain csiphy instance that will used to
+    receive sensor data
+    - 0, 1, 2
+- qcom,csid-sd-index : should contain csid core instance that will used to
+    receive sensor data
+    - 0, 1, 2, 3
+- qcom,mount-angle : should contain the physical mount angle of the sensor on
+    the target
+    - 0, 90, 180, 360
+- cam_vdig-supply : should contain regulator from which digital voltage is
+    supplied
+- cam_vana-supply : should contain regulator from which analog voltage is
+    supplied
+- cam_vio-supply : should contain regulator from which IO voltage is supplied
+- qcom,cam-vreg-name : should contain names of all regulators needed by this
+    sensor
+    - "cam_vdig", "cam_vana", "cam_vio"
+- qcom,cam-vreg-type : should contain regulator type for
+    regulators mentioned in qcom,cam-vreg-name property (in the same order)
+- qcom,cam-vreg-min-voltage : should contain minimum voltage level for
+    regulators mentioned in qcom,cam-vreg-name property (in the same order)
+- qcom,cam-vreg-max-voltage : should contain maximum voltage level for
+    regulators mentioned in qcom,cam-vreg-name property (in the same order)
+- qcom,cam-vreg-op-mode : should contain optimum voltage level for regulators
+    mentioned in qcom,cam-vreg-name property (in the same order)
+- sony,i2c_addr : should contain i2c slave address, device id address
+    ,expected id read value and device id mask
+- sony,eeprom_addr : should contain eeprom address
+- sony,eeprom_type : should contain load eeprom type
+    - 0      -> load the specified eeprom address each 256 bytes
+    - 1      -> load type for NVM
+    - 2      -> load the specified eeprom address just maximum length
+    - 3      -> load the specified eeprom address just maximum length for sensor name "IMX200"
+    - others -> do not load eeprom
+- sony,eeprom_max_len : should contain eeprom maximum length
+- sony,gpio_af : should contain index to gpio used by sensors auto focus enable
+- sony,subdev_code : should contain data format code (from enum v4l2_mbus_pixelcode)
+
+Optional properties:
+- qcom,slave-id : should contain i2c slave address, device id address
+    ,expected id read value and device id mask
+- qcom,sensor-name : should contain unique sensor name to differentiate from
+    other sensor
+    - "sony_camera_0"
+    - "sony_camera_1"
+    - "sony_camera_2"
+- gpios : should contain phandle to gpio controller node and array of
+    #gpio-cells specifying specific gpio (controller specific)
+- qcom,gpio-no-mux : should contain field to indicate whether gpio mux table is
+    available
+    - 1 if gpio mux is not available, 0 otherwise
+- qcom,gpio-reset : should contain index to gpio used by sensors reset_n
+- qcom,gpio-req-tbl-num : should contain index to gpios specific to this sensor
+- qcom,gpio-req-tbl-flags : should contain direction of gpios present in
+    qcom,gpio-req-tbl-num property (in the same order)
+- qcom,gpio-req-tbl-label : should contain name of gpios present in
+    qcom,gpio-req-tbl-num property (in the same order)
+- qcom,csi-lane-assign : should contain lane assignment value to map CSIPHY
+    lanes to CSID lanes
+    - 0x4320
+- qcom,csi-lane-mask : should contain lane mask that specifies CSIPHY lanes to
+    be enabled
+- qcom,sensor-position : should contain the mount angle of the camera sensor
+    - 0 -> back camera
+    - 1 -> front camera
+    - 2 -> ToF
+- qcom,sensor-mode : should contain sensor mode supported
+    - 0 -> back camera 2D
+    - 1 -> front camera 2D
+    - 2 -> back camera 3D
+    - 3 -> back camera int 3D
+- qcom,cci-master : should contain i2c master id to be used for this camera
+    sensor
+    - 0 -> MASTER 0
+    - 1 -> MASTER 1
+
+Example:
+
+	qcom,camera@0 {
+		cell-index = <0>;
+		compatible = "qcom,sony_camera_0";
+		reg = <0x0>;
+		status = "ok";
+		qcom,slave-id = <0x20 0x0 0x0000>;
+		qcom,csiphy-sd-index = <0>;
+		qcom,csid-sd-index = <0>;
+		qcom,mount-angle = <0>;
+		qcom,sensor-name = "sony_camera_0";
+		cam_vdig-supply = <&pm8994_l3>;
+		cam_vana-supply = <&pm8994_l17>;
+		cam_vio-supply = <&pm8994_lvs1>;
+		qcom,cam-vreg-name = "cam_vdig", "cam_vana", "cam_vio";
+		qcom,cam-vreg-type = <0 0 1 0>;
+		qcom,cam-vreg-min-voltage = <1000000 2700000 0>;
+		qcom,cam-vreg-max-voltage = <1000000 2700000 0>;
+		qcom,cam-vreg-op-mode = <105000 85600 0>;
+		qcom,gpio-no-mux = <0>;
+		pinctrl-names = "cam_default", "cam_suspend";
+		pinctrl-0 = <&cam_sensor_mclk0_active &cam_sensor_rear_active>;
+		pinctrl-1 = <&cam_sensor_mclk0_suspend &cam_sensor_rear_suspend>;
+		gpios = <&tlmm 13 0>, <&tlmm 30 0>;
+		qcom,gpio-reset = <1>;
+		qcom,gpio-req-tbl-num = <0 1>;
+		qcom,gpio-req-tbl-flags = <1 0>;
+		qcom,gpio-req-tbl-label = "CAMIF_MCLK0", "CAM_RESET0";
+		qcom,csi-lane-assign = <0x4320>;
+		qcom,csi-lane-mask = <0x1F>;
+		qcom,sensor-position = <0>;
+		qcom,sensor-mode = <1>;
+		qcom,cci-master = <0>;
+		clocks = <&clock_mmss clk_mclk0_clk_src>, <&clock_mmss clk_camss_mclk0_clk>;
+		clock-names = "cam_src_clk", "cam_clk";
+		sony,i2c_addr = <0x20>;
+		sony,eeprom_addr = <0xA8>;
+		sony,eeprom_type = <3>;
+		sony,eeprom_max_len = <2048>;
+		sony,gpio_af = <0>;
+		sony,subdev_code = <0x3007>;
+		sony_camera_module_0: sony,camera_modules {
+		};
+	};

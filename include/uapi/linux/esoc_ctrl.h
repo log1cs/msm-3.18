@@ -16,7 +16,6 @@
 #define HSIC		"HSIC"
 #define HSICPCIe	"HSIC+PCIe"
 #define PCIe		"PCIe"
-#define ESOC_REQ_SEND_SHUTDOWN	ESOC_REQ_SEND_SHUTDOWN
 
 enum esoc_evt {
 	ESOC_RUN_STATE = 0x1,
@@ -57,7 +56,6 @@ enum esoc_req {
 	ESOC_REQ_IMG = 1,
 	ESOC_REQ_DEBUG,
 	ESOC_REQ_SHUTDOWN,
-	ESOC_REQ_SEND_SHUTDOWN,
 };
 
 #ifdef __KERNEL__

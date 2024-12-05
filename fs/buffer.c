@@ -1,3 +1,4 @@
+/* 2017-06-21: File changed by Sony Corporation */
 /*
  *  linux/fs/buffer.c
  *
@@ -2499,7 +2500,7 @@ int block_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf,
 	 * Update file times before taking page lock. We may end up failing the
 	 * fault so this update may be superfluous but who really cares...
 	 */
-	file_update_time(vma->vm_file);
+	vma_file_update_time(vma);
 
 	ret = __block_page_mkwrite(vma, vmf, get_block);
 	sb_end_pagefault(sb);
@@ -3315,6 +3316,29 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL(try_to_free_buffers);
+
+#ifdef CONFIG_SNSC_FS_FAT_RELAX_SYNC
+int flush_dirty_buffer(struct buffer_head *bh)
+{
+	int ret = 0;
+	int wr;
+
+	WARN_ON(atomic_read(&bh->b_count) < 1);
+	lock_buffer(bh);
+	if (test_clear_buffer_dirty(bh)) {
+		get_bh(bh);
+		bh->b_end_io = end_buffer_write_sync;
+		wr = bdev_support_ordered(bh->b_bdev) ?  WRITE_FLUSH_FUA : WRITE;
+		ret = submit_bh(wr, bh);
+	} else {
+		unlock_buffer(bh);
+	}
+	return ret;
+}
+#endif
+#ifdef CONFIG_SNSC_FS_FAT_RELAX_SYNC
+EXPORT_SYMBOL_GPL(flush_dirty_buffer);
+#endif
 
 /*
  * There are no bdflush tunables left.  But distributions are

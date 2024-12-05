@@ -1,3 +1,4 @@
+/* 2017-06-21: File changed by Sony Corporation */
 #ifndef _UAPI_LINUX_MSDOS_FS_H
 #define _UAPI_LINUX_MSDOS_FS_H
 
@@ -104,6 +105,9 @@ struct __fat_dirent {
 /* <linux/videotext.h> has used 0x72 ('r') in collision, so skip a few */
 #define FAT_IOCTL_GET_ATTRIBUTES	_IOR('r', 0x10, __u32)
 #define FAT_IOCTL_SET_ATTRIBUTES	_IOW('r', 0x11, __u32)
+#define FAT_IOCTL_CLOSE_NOSYNC		_IOW('r', 0x60, __u32)
+#define FAT_IOCTL_EXPAND_SIZE		_IOW('r', 0x61, __u32)
+#define FAT_IOCTL_CONCAT_DIRTY_PAGES	_IO('r', 0x62)
 /*Android kernel has used 0x12, so we use 0x13*/
 #define FAT_IOCTL_GET_VOLUME_ID		_IOR('r', 0x13, __u32)
 

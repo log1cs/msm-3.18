@@ -1,3 +1,4 @@
+/* 2017-05-25: File changed by Sony Corporation */
 /*
  *      sd.c Copyright (C) 1992 Drew Eckhardt
  *           Copyright (C) 1993, 1994, 1995, 1999 Eric Youngdale
@@ -3262,7 +3263,12 @@ static void __exit exit_sd(void)
 	}
 }
 
+#ifdef CONFIG_SNSC_DEFERRED_INITCALLS_SCSI
+deferred_initcall(init_sd,
+		  CONFIG_SNSC_DEFERRED_INITCALLS_GROUP_BLK_DEV_SD);
+#else
 module_init(init_sd);
+#endif
 module_exit(exit_sd);
 
 static void sd_print_sense_hdr(struct scsi_disk *sdkp,

@@ -1,3 +1,4 @@
+/* 2017-02-17: File changed by Sony Corporation */
 /*
  * Copyright (C) 2006 - 2007 Ivo van Doorn
  * Copyright (C) 2007 Dmitry Torokhov
@@ -62,6 +63,10 @@ struct rfkill {
 	const struct rfkill_ops	*ops;
 	void			*data;
 
+#ifdef CONFIG_MACH_OPENQ820
+	char			mac_address[6];
+#endif
+
 #ifdef CONFIG_RFKILL_LEDS
 	struct led_trigger	led_trigger;
 	const char		*ledtrigname;
@@ -122,6 +127,9 @@ static struct {
 
 static bool rfkill_epo_lock_active;
 
+#ifdef CONFIG_MACH_OPENQ820
+extern unsigned char* kernel_get_wlan_mac(unsigned char* buf);
+#endif
 
 #ifdef CONFIG_RFKILL_LEDS
 static void rfkill_led_trigger_event(struct rfkill *rfkill)
@@ -618,6 +626,22 @@ static ssize_t type_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(type);
 
+#ifdef CONFIG_MACH_OPENQ820
+static ssize_t macaddress_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct rfkill *rfkill = to_rfkill(dev);
+	return sprintf(buf, "%.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n", rfkill->mac_address[0],
+								rfkill->mac_address[1],
+								rfkill->mac_address[2],
+								rfkill->mac_address[3],
+								rfkill->mac_address[4],
+								rfkill->mac_address[5]);
+}
+static DEVICE_ATTR_RO(macaddress);
+#endif
+
 static ssize_t index_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
@@ -732,6 +756,9 @@ static DEVICE_ATTR_RO(claim);
 static struct attribute *rfkill_dev_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_type.attr,
+#ifdef CONFIG_MACH_OPENQ820
+	&dev_attr_macaddress.attr,
+#endif
 	&dev_attr_index.attr,
 	&dev_attr_persistent.attr,
 	&dev_attr_state.attr,
@@ -782,6 +809,7 @@ void rfkill_pause_polling(struct rfkill *rfkill)
 }
 EXPORT_SYMBOL(rfkill_pause_polling);
 
+#ifdef CONFIG_RFKILL_PM
 void rfkill_resume_polling(struct rfkill *rfkill)
 {
 	BUG_ON(!rfkill);
@@ -794,7 +822,7 @@ void rfkill_resume_polling(struct rfkill *rfkill)
 }
 EXPORT_SYMBOL(rfkill_resume_polling);
 
-static __maybe_unused int rfkill_suspend(struct device *dev, pm_message_t state)
+static int rfkill_suspend(struct device *dev, pm_message_t state)
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
@@ -803,7 +831,7 @@ static __maybe_unused int rfkill_suspend(struct device *dev, pm_message_t state)
 	return 0;
 }
 
-static __maybe_unused int rfkill_resume(struct device *dev)
+static int rfkill_resume(struct device *dev)
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 	bool cur;
@@ -817,15 +845,17 @@ static __maybe_unused int rfkill_resume(struct device *dev)
 
 	return 0;
 }
-
+#endif
 
 static struct class rfkill_class = {
 	.name		= "rfkill",
 	.dev_release	= rfkill_release,
 	.dev_groups	= rfkill_dev_groups,
 	.dev_uevent	= rfkill_dev_uevent,
-	.suspend	= IS_ENABLED(CONFIG_RFKILL_PM) ? rfkill_suspend : NULL,
-	.resume		= IS_ENABLED(CONFIG_RFKILL_PM) ? rfkill_resume : NULL,
+#ifdef CONFIG_RFKILL_PM
+	.suspend	= rfkill_suspend,
+	.resume		= rfkill_resume,
+#endif
 };
 
 bool rfkill_blocked(struct rfkill *rfkill)
@@ -873,6 +903,12 @@ struct rfkill * __must_check rfkill_alloc(const char *name,
 	rfkill->name = name;
 	rfkill->ops = ops;
 	rfkill->data = ops_data;
+
+#ifdef CONFIG_MACH_OPENQ820
+	if (kernel_get_wlan_mac(rfkill->mac_address) == NULL) {
+		pr_err("No BT mac address stored in vendor area! BT Mac address will be from firmware bin file\n");
+	}
+#endif
 
 	dev = &rfkill->dev;
 	dev->class = &rfkill_class;

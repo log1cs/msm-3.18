@@ -1,3 +1,4 @@
+/* 2017-11-13: File changed by Sony Corporation */
 #ifndef _LINUX_IRQ_H
 #define _LINUX_IRQ_H
 
@@ -26,6 +27,11 @@
 #include <asm/irq.h>
 #include <asm/ptrace.h>
 #include <asm/irq_regs.h>
+
+#ifdef CONFIG_SNSC_LCTRACER
+#include <linux/sched.h>
+#include <linux/snsc_lctracer.h>
+#endif
 
 struct seq_file;
 struct module;

@@ -85,6 +85,12 @@ config SERIAL_EARLYCON_ARM_SEMIHOST
 	  with "earlycon=smh" on the kernel command line. The console is
 	  enabled when early_param is processed.
 
+config SERIAL_AMBA_PL011_FLUSH_SERIAL_TTY
+	bool "Enable pl011_flush_serial_tty()"
+	depends on SERIAL_AMBA_PL011 && EXCEPTION_MONITOR
+	help
+	  This enables pl011_flush_serial_tty() for Exception monitor
+
 config SERIAL_SB1250_DUART
 	tristate "BCM1xxx on-chip DUART serial support"
 	depends on SIBYTE_SB1xxx_SOC=y

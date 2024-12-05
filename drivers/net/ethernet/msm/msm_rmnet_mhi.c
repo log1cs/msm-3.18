@@ -30,12 +30,12 @@
 #include <linux/rtnetlink.h>
 
 #define RMNET_MHI_DRIVER_NAME "rmnet_mhi"
+#define RMNET_MHI_DEV_NAME    "rmnet_mhi%d"
 #define MHI_DEFAULT_MTU        8000
 #define MHI_MAX_MRU            0xFFFF
 #define MHI_NAPI_WEIGHT_VALUE  12
 #define WATCHDOG_TIMEOUT       (30 * HZ)
 #define RMNET_IPC_LOG_PAGES (100)
-#define IRQ_MASKED_BIT (0)
 
 enum DBG_LVL {
 	MSG_VERBOSE = 0x1,
@@ -80,7 +80,6 @@ struct __packed mhi_skb_priv {
 struct rmnet_mhi_private {
 	struct list_head	      node;
 	u32                           dev_id;
-	const char		      *interface_name;
 	struct mhi_client_handle      *tx_client_handle;
 	struct mhi_client_handle      *rx_client_handle;
 	enum MHI_CLIENT_CHANNEL       tx_channel;
@@ -101,21 +100,19 @@ struct rmnet_mhi_private {
 	u32			      mhi_enabled;
 	struct platform_device        *pdev;
 	struct net_device	      *dev;
-	unsigned long		      flags;
-	int			      wake_count;
+	atomic_t		      irq_masked_cntr;
 	spinlock_t		      out_chan_full_lock; /* tx queue lock */
+	atomic_t		      pending_data;
 	struct sk_buff		      *frag_skb;
 	struct work_struct	      alloc_work;
 	/* lock to queue hardware and internal queue */
 	spinlock_t		      alloc_lock;
 	void			      *rmnet_ipc_log;
-	rwlock_t		      pm_lock; /* state change lock */
 	struct debug_params	      debug;
 	struct dentry		      *dentry;
 };
 
 static LIST_HEAD(rmnet_mhi_ctxt_list);
-static struct platform_driver rmnet_mhi_driver;
 
 static int rmnet_mhi_process_fragment(struct rmnet_mhi_private *rmnet_mhi_ptr,
 				       struct sk_buff *skb, int frag)
@@ -132,12 +129,12 @@ static int rmnet_mhi_process_fragment(struct rmnet_mhi_private *rmnet_mhi_ptr,
 			rmnet_mhi_ptr->frag_skb = NULL;
 			return -ENOMEM;
 		}
-		dev_kfree_skb_any(rmnet_mhi_ptr->frag_skb);
+		kfree_skb(rmnet_mhi_ptr->frag_skb);
 		rmnet_mhi_ptr->frag_skb = temp_skb;
 		memcpy(skb_put(rmnet_mhi_ptr->frag_skb, skb->len),
 			skb->data,
 			skb->len);
-		dev_kfree_skb_any(skb);
+		kfree_skb(skb);
 		if (!frag) {
 			/* Last fragmented piece was received, ship it */
 			netif_receive_skb(rmnet_mhi_ptr->frag_skb);
@@ -198,6 +195,7 @@ static int rmnet_alloc_rx(struct rmnet_mhi_private *rmnet_mhi_ptr,
 {
 	u32 cur_mru = rmnet_mhi_ptr->mru;
 	struct mhi_skb_priv *skb_priv;
+	unsigned long flags;
 	int ret;
 	struct sk_buff *skb;
 
@@ -216,7 +214,7 @@ static int rmnet_alloc_rx(struct rmnet_mhi_private *rmnet_mhi_ptr,
 		skb_priv->dma_addr = 0;
 
 		/* These steps must be in atomic context */
-		spin_lock_bh(&rmnet_mhi_ptr->alloc_lock);
+		spin_lock_irqsave(&rmnet_mhi_ptr->alloc_lock, flags);
 
 		/* It's possible by the time alloc_skb (GFP_KERNEL)
 		 * returns we already called rmnet_alloc_rx
@@ -225,22 +223,14 @@ static int rmnet_alloc_rx(struct rmnet_mhi_private *rmnet_mhi_ptr,
 		 */
 		if (unlikely(atomic_read(&rmnet_mhi_ptr->rx_pool_len) >=
 			     rmnet_mhi_ptr->rx_buffers_max)) {
-			spin_unlock_bh(&rmnet_mhi_ptr->alloc_lock);
+			spin_unlock_irqrestore(&rmnet_mhi_ptr->alloc_lock,
+					       flags);
 			dev_kfree_skb_any(skb);
 			return 0;
 		}
 
-		read_lock_bh(&rmnet_mhi_ptr->pm_lock);
-		if (unlikely(!rmnet_mhi_ptr->mhi_enabled)) {
-			rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-				  "!interface is disabled\n");
-			dev_kfree_skb_any(skb);
-			read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
-			spin_unlock_bh(&rmnet_mhi_ptr->alloc_lock);
-			return -EIO;
-		}
-
-		ret = mhi_queue_xfer(rmnet_mhi_ptr->rx_client_handle,
+		ret = mhi_queue_xfer(
+				     rmnet_mhi_ptr->rx_client_handle,
 				     skb->data,
 				     skb_priv->dma_size,
 				     MHI_EOT);
@@ -248,15 +238,14 @@ static int rmnet_alloc_rx(struct rmnet_mhi_private *rmnet_mhi_ptr,
 			rmnet_log(rmnet_mhi_ptr,
 				  MSG_CRITICAL,
 				  "mhi_queue_xfer failed, error %d", ret);
-			read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
-			spin_unlock_bh(&rmnet_mhi_ptr->alloc_lock);
+			spin_unlock_irqrestore(&rmnet_mhi_ptr->alloc_lock,
+					       flags);
 			dev_kfree_skb_any(skb);
 			return ret;
 		}
 		skb_queue_tail(&rmnet_mhi_ptr->rx_buffers, skb);
 		atomic_inc(&rmnet_mhi_ptr->rx_pool_len);
-		read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
-		spin_unlock_bh(&rmnet_mhi_ptr->alloc_lock);
+		spin_unlock_irqrestore(&rmnet_mhi_ptr->alloc_lock, flags);
 	}
 
 	return 0;
@@ -268,26 +257,12 @@ static void rmnet_mhi_alloc_work(struct work_struct *work)
 				    struct rmnet_mhi_private,
 				    alloc_work);
 	int ret;
-	/* sleep about 1 sec and retry, that should be enough time
-	 * for system to reclaim freed memory back.
-	 */
-	const int sleep_ms =  1000;
-	int retry = 60;
 
 	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Entered\n");
-
-	do {
-		ret = rmnet_alloc_rx(rmnet_mhi_ptr,
-				     rmnet_mhi_ptr->allocation_flags);
-		/* sleep and try again */
-		if (ret == -ENOMEM) {
-			msleep(sleep_ms);
-			retry--;
-		}
-	} while (ret == -ENOMEM && retry);
-
-	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Exit with status:%d retry:%d\n",
-		  ret, retry);
+	ret = rmnet_alloc_rx(rmnet_mhi_ptr,
+			     rmnet_mhi_ptr->allocation_flags);
+	BUG_ON(ret == -ENOMEM);
+	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Exit\n");
 }
 
 static int rmnet_mhi_poll(struct napi_struct *napi, int budget)
@@ -304,12 +279,6 @@ static int rmnet_mhi_poll(struct napi_struct *napi, int budget)
 
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Entered\n");
 
-	read_lock_bh(&rmnet_mhi_ptr->pm_lock);
-	if (unlikely(!rmnet_mhi_ptr->mhi_enabled)) {
-		rmnet_log(rmnet_mhi_ptr, MSG_INFO, "interface is disabled!\n");
-		read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
-		return 0;
-	}
 	while (received_packets < budget) {
 		struct mhi_result *result =
 		      mhi_poll(rmnet_mhi_ptr->rx_client_handle);
@@ -367,48 +336,75 @@ static int rmnet_mhi_poll(struct napi_struct *napi, int budget)
 		dev->stats.rx_bytes += result->bytes_xferd;
 
 	} /* while (received_packets < budget) or any other error */
-	read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
 
 	/* Queue new buffers */
 	res = rmnet_alloc_rx(rmnet_mhi_ptr, GFP_ATOMIC);
-
-	read_lock_bh(&rmnet_mhi_ptr->pm_lock);
-	if (likely(rmnet_mhi_ptr->mhi_enabled)) {
-		if (res == -ENOMEM) {
-			rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-				  "out of mem, queuing bg worker\n");
-			rmnet_mhi_ptr->alloc_fail++;
-			schedule_work(&rmnet_mhi_ptr->alloc_work);
-		}
-
-		napi_complete(napi);
-
-		/* We got a NULL descriptor back */
-		if (!should_reschedule) {
-			if (test_and_clear_bit(IRQ_MASKED_BIT,
-					       &rmnet_mhi_ptr->flags))
-				mhi_unmask_irq(rmnet_mhi_ptr->rx_client_handle);
-			mhi_set_lpm(rmnet_mhi_ptr->rx_client_handle, true);
-			rmnet_mhi_ptr->wake_count--;
-		} else {
-			if (received_packets == budget)
-				rmnet_mhi_ptr->debug.rx_napi_budget_overflow++;
-			napi_reschedule(napi);
-		}
-
-		rmnet_mhi_ptr->debug.rx_napi_skb_burst_min =
-			min((u64)received_packets,
-			    rmnet_mhi_ptr->debug.rx_napi_skb_burst_min);
-
-		rmnet_mhi_ptr->debug.rx_napi_skb_burst_max =
-			max((u64)received_packets,
-			    rmnet_mhi_ptr->debug.rx_napi_skb_burst_max);
+	if (res == -ENOMEM) {
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_INFO,
+			  "out of mem, queuing bg worker\n");
+		rmnet_mhi_ptr->alloc_fail++;
+		schedule_work(&rmnet_mhi_ptr->alloc_work);
 	}
-	read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
+
+	napi_complete(napi);
+
+	/* We got a NULL descriptor back */
+	if (should_reschedule == false) {
+		if (atomic_read(&rmnet_mhi_ptr->irq_masked_cntr)) {
+			atomic_dec(&rmnet_mhi_ptr->irq_masked_cntr);
+			mhi_unmask_irq(rmnet_mhi_ptr->rx_client_handle);
+			mhi_set_lpm(rmnet_mhi_ptr->rx_client_handle, true);
+		}
+	} else {
+		if (received_packets == budget)
+			rmnet_mhi_ptr->debug.rx_napi_budget_overflow++;
+		napi_reschedule(napi);
+	}
+
+	rmnet_mhi_ptr->debug.rx_napi_skb_burst_min =
+		min((u64)received_packets,
+		    rmnet_mhi_ptr->debug.rx_napi_skb_burst_min);
+
+	rmnet_mhi_ptr->debug.rx_napi_skb_burst_max =
+		max((u64)received_packets,
+		    rmnet_mhi_ptr->debug.rx_napi_skb_burst_max);
 
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE,
 		  "Exited, polled %d pkts\n", received_packets);
 	return received_packets;
+}
+
+void rmnet_mhi_clean_buffers(struct net_device *dev)
+{
+	struct rmnet_mhi_private *rmnet_mhi_ptr =
+		*(struct rmnet_mhi_private **)netdev_priv(dev);
+
+	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Entered\n");
+	/* Clean TX buffers */
+	rmnet_mhi_internal_clean_unmap_buffers(dev,
+					       &rmnet_mhi_ptr->tx_buffers,
+					       DMA_TO_DEVICE);
+
+	/* Clean RX buffers */
+	rmnet_mhi_internal_clean_unmap_buffers(dev,
+					       &rmnet_mhi_ptr->rx_buffers,
+					       DMA_FROM_DEVICE);
+	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Exited\n");
+}
+
+static int rmnet_mhi_disable_channels(struct rmnet_mhi_private *rmnet_mhi_ptr)
+{
+	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Closing MHI TX channel\n");
+	mhi_close_channel(rmnet_mhi_ptr->tx_client_handle);
+	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Closing MHI RX channel\n");
+	mhi_close_channel(rmnet_mhi_ptr->rx_client_handle);
+	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Clearing Pending TX buffers.\n");
+	rmnet_mhi_clean_buffers(rmnet_mhi_ptr->dev);
+	rmnet_mhi_ptr->tx_client_handle = NULL;
+	rmnet_mhi_ptr->rx_client_handle = NULL;
+
+	return 0;
 }
 
 static int rmnet_mhi_init_inbound(struct rmnet_mhi_private *rmnet_mhi_ptr)
@@ -433,7 +429,7 @@ static void rmnet_mhi_tx_cb(struct mhi_result *result)
 	struct net_device *dev;
 	struct rmnet_mhi_private *rmnet_mhi_ptr;
 	unsigned long burst_counter = 0;
-	unsigned long flags, pm_flags;
+	unsigned long flags;
 
 	rmnet_mhi_ptr = result->user_data;
 	dev = rmnet_mhi_ptr->dev;
@@ -453,10 +449,10 @@ static void rmnet_mhi_tx_cb(struct mhi_result *result)
 			break;
 		} else {
 			if (skb->data == result->buf_addr) {
-				dev_kfree_skb_any(skb);
+				kfree_skb(skb);
 				break;
 			}
-			dev_kfree_skb_any(skb);
+			kfree_skb(skb);
 			burst_counter++;
 
 			/* Update statistics */
@@ -479,15 +475,10 @@ static void rmnet_mhi_tx_cb(struct mhi_result *result)
 		    rmnet_mhi_ptr->debug.tx_cb_skb_free_burst_max);
 
 	/* In case we couldn't write again, now we can! */
-	read_lock_irqsave(&rmnet_mhi_ptr->pm_lock, pm_flags);
-	if (likely(rmnet_mhi_ptr->mhi_enabled)) {
-		spin_lock_irqsave(&rmnet_mhi_ptr->out_chan_full_lock, flags);
-		rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Waking up queue\n");
-		netif_wake_queue(dev);
-		spin_unlock_irqrestore(&rmnet_mhi_ptr->out_chan_full_lock,
-				       flags);
-	}
-	read_unlock_irqrestore(&rmnet_mhi_ptr->pm_lock, pm_flags);
+	spin_lock_irqsave(&rmnet_mhi_ptr->out_chan_full_lock, flags);
+	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Waking up queue\n");
+	netif_wake_queue(dev);
+	spin_unlock_irqrestore(&rmnet_mhi_ptr->out_chan_full_lock, flags);
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Exited\n");
 }
 
@@ -495,27 +486,20 @@ static void rmnet_mhi_rx_cb(struct mhi_result *result)
 {
 	struct net_device *dev;
 	struct rmnet_mhi_private *rmnet_mhi_ptr;
-	unsigned long flags;
-
 	rmnet_mhi_ptr = result->user_data;
 	dev = rmnet_mhi_ptr->dev;
 
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Entered\n");
 	rmnet_mhi_ptr->debug.rx_interrupts_count++;
-	read_lock_irqsave(&rmnet_mhi_ptr->pm_lock, flags);
-	if (likely(rmnet_mhi_ptr->mhi_enabled)) {
-		if (napi_schedule_prep(&rmnet_mhi_ptr->napi)) {
-			if (!test_and_set_bit(IRQ_MASKED_BIT,
-					      &rmnet_mhi_ptr->flags))
-				mhi_mask_irq(rmnet_mhi_ptr->rx_client_handle);
-			mhi_set_lpm(rmnet_mhi_ptr->rx_client_handle, false);
-			rmnet_mhi_ptr->wake_count++;
-			__napi_schedule(&rmnet_mhi_ptr->napi);
-		} else {
-			rmnet_mhi_ptr->debug.rx_interrupts_in_masked_irq++;
-		}
+
+	if (napi_schedule_prep(&(rmnet_mhi_ptr->napi))) {
+		mhi_mask_irq(rmnet_mhi_ptr->rx_client_handle);
+		atomic_inc(&rmnet_mhi_ptr->irq_masked_cntr);
+		mhi_set_lpm(rmnet_mhi_ptr->rx_client_handle, false);
+		__napi_schedule(&(rmnet_mhi_ptr->napi));
+	} else {
+		rmnet_mhi_ptr->debug.rx_interrupts_in_masked_irq++;
 	}
-	read_unlock_irqrestore(&rmnet_mhi_ptr->pm_lock, flags);
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Exited\n");
 }
 
@@ -524,7 +508,8 @@ static int rmnet_mhi_open(struct net_device *dev)
 	struct rmnet_mhi_private *rmnet_mhi_ptr =
 			*(struct rmnet_mhi_private **)netdev_priv(dev);
 
-	rmnet_log(rmnet_mhi_ptr, MSG_INFO,
+	rmnet_log(rmnet_mhi_ptr,
+		  MSG_INFO,
 		  "Opened net dev interface for MHI chans %d and %d\n",
 		  rmnet_mhi_ptr->tx_channel,
 		  rmnet_mhi_ptr->rx_channel);
@@ -540,35 +525,43 @@ static int rmnet_mhi_open(struct net_device *dev)
 	/* Poll to check if any buffers are accumulated in the
 	 * transport buffers
 	 */
-	read_lock_bh(&rmnet_mhi_ptr->pm_lock);
-	if (likely(rmnet_mhi_ptr->mhi_enabled)) {
-		if (napi_schedule_prep(&rmnet_mhi_ptr->napi)) {
-			if (!test_and_set_bit(IRQ_MASKED_BIT,
-					      &rmnet_mhi_ptr->flags)) {
-				mhi_mask_irq(rmnet_mhi_ptr->rx_client_handle);
-			}
-			mhi_set_lpm(rmnet_mhi_ptr->rx_client_handle, false);
-			rmnet_mhi_ptr->wake_count++;
-			__napi_schedule(&rmnet_mhi_ptr->napi);
-		} else {
-			rmnet_mhi_ptr->debug.rx_interrupts_in_masked_irq++;
-		}
+	if (napi_schedule_prep(&(rmnet_mhi_ptr->napi))) {
+		mhi_mask_irq(rmnet_mhi_ptr->rx_client_handle);
+		atomic_inc(&rmnet_mhi_ptr->irq_masked_cntr);
+		mhi_set_lpm(rmnet_mhi_ptr->rx_client_handle, false);
+		__napi_schedule(&(rmnet_mhi_ptr->napi));
+	} else {
+		rmnet_mhi_ptr->debug.rx_interrupts_in_masked_irq++;
 	}
-	read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
 	return 0;
 
 }
 
+static int rmnet_mhi_disable_iface(struct rmnet_mhi_private *rmnet_mhi_ptr)
+{
+	rmnet_mhi_ptr->rx_enabled = 0;
+	rmnet_mhi_ptr->tx_enabled = 0;
+	rmnet_mhi_ptr->mhi_enabled = 0;
+	if (rmnet_mhi_ptr->dev != 0) {
+		netif_stop_queue(rmnet_mhi_ptr->dev);
+		netif_napi_del(&(rmnet_mhi_ptr->napi));
+		rmnet_mhi_disable_channels(rmnet_mhi_ptr);
+		unregister_netdev(rmnet_mhi_ptr->dev);
+		free_netdev(rmnet_mhi_ptr->dev);
+		rmnet_mhi_ptr->dev = 0;
+	}
+	return 0;
+}
+
 static int rmnet_mhi_disable(struct rmnet_mhi_private *rmnet_mhi_ptr)
 {
+	rmnet_mhi_ptr->mhi_enabled = 0;
+	rmnet_mhi_disable_iface(rmnet_mhi_ptr);
 	napi_disable(&(rmnet_mhi_ptr->napi));
-	rmnet_mhi_ptr->rx_enabled = 0;
-	rmnet_mhi_internal_clean_unmap_buffers(rmnet_mhi_ptr->dev,
-					       &rmnet_mhi_ptr->rx_buffers,
-					       DMA_FROM_DEVICE);
-	if (test_and_clear_bit(IRQ_MASKED_BIT, &rmnet_mhi_ptr->flags))
+	if (atomic_read(&rmnet_mhi_ptr->irq_masked_cntr)) {
 		mhi_unmask_irq(rmnet_mhi_ptr->rx_client_handle);
-
+		atomic_dec(&rmnet_mhi_ptr->irq_masked_cntr);
+	}
 	return 0;
 }
 
@@ -579,9 +572,11 @@ static int rmnet_mhi_stop(struct net_device *dev)
 
 	netif_stop_queue(dev);
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Entered\n");
-	if (test_and_clear_bit(IRQ_MASKED_BIT, &rmnet_mhi_ptr->flags)) {
+	if (atomic_read(&rmnet_mhi_ptr->irq_masked_cntr)) {
 		mhi_unmask_irq(rmnet_mhi_ptr->rx_client_handle);
-		rmnet_log(rmnet_mhi_ptr, MSG_ERROR,
+		atomic_dec(&rmnet_mhi_ptr->irq_masked_cntr);
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_ERROR,
 			  "IRQ was masked, unmasking...\n");
 	}
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Exited\n");
@@ -608,23 +603,14 @@ static int rmnet_mhi_xmit(struct sk_buff *skb, struct net_device *dev)
 	unsigned long flags;
 	struct mhi_skb_priv *tx_priv;
 
-	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE,
-		  "Entered chan %d\n", rmnet_mhi_ptr->tx_channel);
+	rmnet_log(rmnet_mhi_ptr,
+		  MSG_VERBOSE,
+		  "Entered chan %d\n",
+		  rmnet_mhi_ptr->tx_channel);
 
 	tx_priv = (struct mhi_skb_priv *)(skb->cb);
 	tx_priv->dma_size = skb->len;
 	tx_priv->dma_addr = 0;
-	read_lock_bh(&rmnet_mhi_ptr->pm_lock);
-	if (unlikely(!rmnet_mhi_ptr->mhi_enabled)) {
-		/* Only reason interface could be disabled and we get data
-		 * is due to an SSR. We do not want to stop the queue and
-		 * return error. instead we will flush all the uplink packets
-		 * and return successful
-		 */
-		res = NETDEV_TX_OK;
-		dev_kfree_skb_any(skb);
-		goto mhi_xmit_exit;
-	}
 
 	if (mhi_get_free_desc(rmnet_mhi_ptr->tx_client_handle) <= 0) {
 		rmnet_log(rmnet_mhi_ptr,
@@ -636,8 +622,7 @@ static int rmnet_mhi_xmit(struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 		spin_unlock_irqrestore(&rmnet_mhi_ptr->out_chan_full_lock,
 				       flags);
-		res = NETDEV_TX_BUSY;
-		goto mhi_xmit_exit;
+		return NETDEV_TX_BUSY;
 	}
 	res = mhi_queue_xfer(rmnet_mhi_ptr->tx_client_handle,
 			     skb->data,
@@ -654,17 +639,15 @@ static int rmnet_mhi_xmit(struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 		spin_unlock_irqrestore(&rmnet_mhi_ptr->out_chan_full_lock,
 				       flags);
-		res = NETDEV_TX_BUSY;
-		goto mhi_xmit_exit;
+		return NETDEV_TX_BUSY;
 	}
-	res = NETDEV_TX_OK;
+
 	skb_queue_tail(&(rmnet_mhi_ptr->tx_buffers), skb);
 	dev->trans_start = jiffies;
 	rmnet_mhi_ptr->debug.tx_queued_packets_count++;
-mhi_xmit_exit:
-	read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
+
 	rmnet_log(rmnet_mhi_ptr, MSG_VERBOSE, "Exited\n");
-	return res;
+	return NETDEV_TX_OK;
 }
 
 static int rmnet_mhi_ioctl_extended(struct net_device *dev, struct ifreq *ifr)
@@ -710,23 +693,20 @@ static int rmnet_mhi_ioctl_extended(struct net_device *dev, struct ifreq *ifr)
 		ext_cmd.u.data = 0;
 		break;
 	case RMNET_IOCTL_GET_DRIVER_NAME:
-		strlcpy(ext_cmd.u.if_name, rmnet_mhi_ptr->interface_name,
+		strlcpy(ext_cmd.u.if_name, RMNET_MHI_DRIVER_NAME,
 			sizeof(ext_cmd.u.if_name));
 		break;
 	case RMNET_IOCTL_SET_SLEEP_STATE:
-		read_lock_bh(&rmnet_mhi_ptr->pm_lock);
 		if (rmnet_mhi_ptr->mhi_enabled &&
 		    rmnet_mhi_ptr->tx_client_handle != NULL) {
-			rmnet_mhi_ptr->wake_count += (ext_cmd.u.data) ? -1 : 1;
 			mhi_set_lpm(rmnet_mhi_ptr->tx_client_handle,
 				   ext_cmd.u.data);
 		} else {
-			rmnet_log(rmnet_mhi_ptr, MSG_ERROR,
+			rmnet_log(rmnet_mhi_ptr,
+				  MSG_ERROR,
 				  "Cannot set LPM value, MHI is not up.\n");
-			read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
 			return -ENODEV;
 		}
-		read_unlock_bh(&rmnet_mhi_ptr->pm_lock);
 		break;
 	default:
 		rc = -EINVAL;
@@ -819,7 +799,6 @@ static int rmnet_mhi_enable_iface(struct rmnet_mhi_private *rmnet_mhi_ptr)
 	struct rmnet_mhi_private **rmnet_mhi_ctxt = NULL;
 	int r = 0;
 	char ifalias[IFALIASZ];
-	char ifname[IFNAMSIZ];
 	struct mhi_client_handle *client_handle = NULL;
 
 	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Entered.\n");
@@ -851,8 +830,9 @@ static int rmnet_mhi_enable_iface(struct rmnet_mhi_private *rmnet_mhi_ptr)
 				  "Failed to start TX chan ret %d\n",
 				  r);
 			goto mhi_tx_chan_start_fail;
+		} else {
+			rmnet_mhi_ptr->tx_enabled = 1;
 		}
-
 		client_handle = rmnet_mhi_ptr->tx_client_handle;
 	}
 	if (rmnet_mhi_ptr->rx_client_handle != NULL) {
@@ -866,6 +846,8 @@ static int rmnet_mhi_enable_iface(struct rmnet_mhi_private *rmnet_mhi_ptr)
 				  "Failed to start RX chan ret %d\n",
 				  r);
 			goto mhi_rx_chan_start_fail;
+		} else {
+			rmnet_mhi_ptr->rx_enabled = 1;
 		}
 		/* Both tx & rx client handle contain same device info */
 		client_handle = rmnet_mhi_ptr->rx_client_handle;
@@ -876,64 +858,60 @@ static int rmnet_mhi_enable_iface(struct rmnet_mhi_private *rmnet_mhi_ptr)
 		goto net_dev_alloc_fail;
 	}
 
+	snprintf(ifalias,
+		 sizeof(ifalias),
+		 "%s_%04x_%02u.%02u.%02u_%u",
+		 RMNET_MHI_DRIVER_NAME,
+		 client_handle->dev_id,
+		 client_handle->domain,
+		 client_handle->bus,
+		 client_handle->slot,
+		 rmnet_mhi_ptr->dev_id);
 
+	rtnl_lock();
+	rmnet_mhi_ptr->dev =
+		alloc_netdev(sizeof(struct rmnet_mhi_private *),
+			     RMNET_MHI_DEV_NAME,
+			     NET_NAME_PREDICTABLE, rmnet_mhi_setup);
 	if (!rmnet_mhi_ptr->dev) {
-		snprintf(ifalias, sizeof(ifalias),
-			 "%s_%04x_%02u.%02u.%02u_%u",
-			 rmnet_mhi_ptr->interface_name,
-			 client_handle->dev_id,
-			 client_handle->domain,
-			 client_handle->bus,
-			 client_handle->slot,
-			 rmnet_mhi_ptr->dev_id);
-
-		snprintf(ifname, sizeof(ifname), "%s%%d",
-			 rmnet_mhi_ptr->interface_name);
-
-		rtnl_lock();
-		rmnet_mhi_ptr->dev = alloc_netdev(
-				sizeof(struct rmnet_mhi_private *),
-				ifname, NET_NAME_PREDICTABLE, rmnet_mhi_setup);
-
-		if (!rmnet_mhi_ptr->dev) {
-			rmnet_log(rmnet_mhi_ptr, MSG_CRITICAL,
-				  "Network device allocation failed\n");
-			ret = -ENOMEM;
-			goto net_dev_alloc_fail;
-		}
-		SET_NETDEV_DEV(rmnet_mhi_ptr->dev, &rmnet_mhi_ptr->pdev->dev);
-		dev_set_alias(rmnet_mhi_ptr->dev, ifalias, strlen(ifalias));
-		rmnet_mhi_ctxt = netdev_priv(rmnet_mhi_ptr->dev);
-		rtnl_unlock();
-		*rmnet_mhi_ctxt = rmnet_mhi_ptr;
-
-		ret = dma_set_mask(&rmnet_mhi_ptr->dev->dev, MHI_DMA_MASK);
-		if (ret)
-			rmnet_mhi_ptr->allocation_flags = GFP_KERNEL;
-		else
-			rmnet_mhi_ptr->allocation_flags = GFP_DMA;
-
-		netif_napi_add(rmnet_mhi_ptr->dev, &rmnet_mhi_ptr->napi,
-			       rmnet_mhi_poll, MHI_NAPI_WEIGHT_VALUE);
-
-		ret = register_netdev(rmnet_mhi_ptr->dev);
-		if (ret) {
-			rmnet_log(rmnet_mhi_ptr, MSG_CRITICAL,
-				  "Network device registration failed\n");
-			goto net_dev_reg_fail;
-		}
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_CRITICAL,
+			  "Network device allocation failed\n");
+		ret = -ENOMEM;
+		goto net_dev_alloc_fail;
 	}
+	SET_NETDEV_DEV(rmnet_mhi_ptr->dev, &rmnet_mhi_ptr->pdev->dev);
+	dev_set_alias(rmnet_mhi_ptr->dev, ifalias, strlen(ifalias));
+	rmnet_mhi_ctxt = netdev_priv(rmnet_mhi_ptr->dev);
+	rtnl_unlock();
+	*rmnet_mhi_ctxt = rmnet_mhi_ptr;
 
-	write_lock_irq(&rmnet_mhi_ptr->pm_lock);
-	rmnet_mhi_ptr->mhi_enabled = 1;
-	write_unlock_irq(&rmnet_mhi_ptr->pm_lock);
+	ret = dma_set_mask(&(rmnet_mhi_ptr->dev->dev),
+						MHI_DMA_MASK);
+	if (ret)
+		rmnet_mhi_ptr->allocation_flags = GFP_KERNEL;
+	else
+		rmnet_mhi_ptr->allocation_flags = GFP_DMA;
 
 	r = rmnet_mhi_init_inbound(rmnet_mhi_ptr);
 	if (r) {
-		rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-			  "Failed to init inbound ret %d\n", r);
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_CRITICAL,
+			  "Failed to init inbound ret %d\n",
+			  r);
 	}
 
+	netif_napi_add(rmnet_mhi_ptr->dev, &(rmnet_mhi_ptr->napi),
+		       rmnet_mhi_poll, MHI_NAPI_WEIGHT_VALUE);
+
+	rmnet_mhi_ptr->mhi_enabled = 1;
+	ret = register_netdev(rmnet_mhi_ptr->dev);
+	if (ret) {
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_CRITICAL,
+			  "Network device registration failed\n");
+		goto net_dev_reg_fail;
+	}
 	napi_enable(&(rmnet_mhi_ptr->napi));
 
 	rmnet_log(rmnet_mhi_ptr, MSG_INFO, "Exited.\n");
@@ -969,50 +947,25 @@ static void rmnet_mhi_cb(struct mhi_cb_info *cb_info)
 
 	switch (cb_info->cb_reason) {
 	case MHI_CB_MHI_DISABLED:
-	case MHI_CB_MHI_SHUTDOWN:
-	case MHI_CB_SYS_ERROR:
-		rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-			  "Got MHI_SYS_ERROR notification. Stopping stack\n");
-
-		/* Disable interface on first notification.  Long
-		 * as we set mhi_enabled = 0, we gurantee rest of
-		 * driver will not touch any critical data.
-		*/
-		write_lock_irq(&rmnet_mhi_ptr->pm_lock);
-		rmnet_mhi_ptr->mhi_enabled = 0;
-		write_unlock_irq(&rmnet_mhi_ptr->pm_lock);
-
-		if (cb_info->chan == rmnet_mhi_ptr->rx_channel) {
-			rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-				  "Receive MHI_DISABLE notification for rx path\n");
-			if (rmnet_mhi_ptr->dev)
-				rmnet_mhi_disable(rmnet_mhi_ptr);
-		} else {
-			rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-				  "Receive MHI_DISABLE notification for tx path\n");
-			rmnet_mhi_ptr->tx_enabled = 0;
-			if (rmnet_mhi_ptr->dev)
-				rmnet_mhi_internal_clean_unmap_buffers(
-						rmnet_mhi_ptr->dev,
-						&rmnet_mhi_ptr->tx_buffers,
-						DMA_TO_DEVICE);
-		}
-
-		/* Remove all votes disabling low power mode */
-		if (!rmnet_mhi_ptr->tx_enabled && !rmnet_mhi_ptr->rx_enabled) {
-			struct mhi_client_handle *handle =
-				rmnet_mhi_ptr->rx_client_handle;
-
-			if (!handle)
-				handle = rmnet_mhi_ptr->tx_client_handle;
-			while (rmnet_mhi_ptr->wake_count) {
-				mhi_set_lpm(handle, true);
-				rmnet_mhi_ptr->wake_count--;
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_CRITICAL,
+			  "Got MHI_DISABLED notification. Stopping stack\n");
+		if (rmnet_mhi_ptr->mhi_enabled) {
+			rmnet_mhi_ptr->mhi_enabled = 0;
+			/* Ensure MHI is disabled before other mem ops */
+			wmb();
+			while (atomic_read(&rmnet_mhi_ptr->pending_data)) {
+				rmnet_log(rmnet_mhi_ptr,
+					  MSG_CRITICAL,
+					  "Waiting for channels to stop.\n");
+				msleep(25);
 			}
+			rmnet_mhi_disable(rmnet_mhi_ptr);
 		}
 		break;
 	case MHI_CB_MHI_ENABLED:
-		rmnet_log(rmnet_mhi_ptr, MSG_INFO,
+		rmnet_log(rmnet_mhi_ptr,
+			  MSG_CRITICAL,
 			  "Got MHI_ENABLED notification. Starting stack\n");
 		if (cb_info->chan == rmnet_mhi_ptr->rx_channel)
 			rmnet_mhi_ptr->rx_enabled = 1;
@@ -1041,10 +994,16 @@ static void rmnet_mhi_cb(struct mhi_cb_info *cb_info)
 		}
 		break;
 	case MHI_CB_XFER:
-		if (cb_info->chan == rmnet_mhi_ptr->rx_channel)
-			rmnet_mhi_rx_cb(cb_info->result);
-		else
-			rmnet_mhi_tx_cb(cb_info->result);
+		atomic_inc(&rmnet_mhi_ptr->pending_data);
+		/* Flush pending data is set before any other mem operations */
+		wmb();
+		if (rmnet_mhi_ptr->mhi_enabled) {
+			if (cb_info->chan == rmnet_mhi_ptr->rx_channel)
+				rmnet_mhi_rx_cb(cb_info->result);
+			else
+				rmnet_mhi_tx_cb(cb_info->result);
+		}
+		atomic_dec(&rmnet_mhi_ptr->pending_data);
 		break;
 	default:
 		break;
@@ -1124,7 +1083,7 @@ static void rmnet_mhi_create_debugfs(struct rmnet_mhi_private *rmnet_mhi_ptr)
 	snprintf(node_name,
 		 sizeof(node_name),
 		 "%s_%04x_%02u.%02u.%02u_%u",
-		 rmnet_mhi_ptr->interface_name,
+		 RMNET_MHI_DRIVER_NAME,
 		 client_handle->dev_id,
 		 client_handle->domain,
 		 client_handle->bus,
@@ -1209,7 +1168,6 @@ static int rmnet_mhi_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	rmnet_mhi_ptr->pdev = pdev;
 	spin_lock_init(&rmnet_mhi_ptr->out_chan_full_lock);
-	rwlock_init(&rmnet_mhi_ptr->pm_lock);
 
 	rc = of_property_read_u32(pdev->dev.of_node,
 				  "qcom,mhi-mru",
@@ -1249,15 +1207,6 @@ static int rmnet_mhi_probe(struct platform_device *pdev)
 			  "max-mtu not defined, setting to max %d\n",
 			  MHI_MAX_MTU);
 		rmnet_mhi_ptr->max_mtu = MHI_MAX_MTU;
-	}
-
-	rc = of_property_read_string(pdev->dev.of_node, "qcom,interface-name",
-				     &rmnet_mhi_ptr->interface_name);
-	if (likely(rc)) {
-		rmnet_log(rmnet_mhi_ptr, MSG_INFO,
-			  "interface-name not defined, setting to default name %s\n",
-			  RMNET_MHI_DRIVER_NAME);
-		rmnet_mhi_ptr->interface_name = rmnet_mhi_driver.driver.name;
 	}
 
 	client_info.dev = &pdev->dev;
@@ -1322,7 +1271,7 @@ static int rmnet_mhi_probe(struct platform_device *pdev)
 	snprintf(node_name,
 		 sizeof(node_name),
 		 "%s_%04x_%02u.%02u.%02u_%u",
-		 rmnet_mhi_ptr->interface_name,
+		 RMNET_MHI_DRIVER_NAME,
 		 client_handle->dev_id,
 		 client_handle->domain,
 		 client_handle->bus,

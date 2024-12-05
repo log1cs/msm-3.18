@@ -37,6 +37,7 @@ header-y += swab.h
 header-y += termbits.h
 header-y += termios.h
 header-y += types.h
+header-y += ucontext.h
 header-y += unistd.h
 
 header-y += $(foreach hdr,$(opt-header), \

@@ -81,7 +81,6 @@
 	qcom,msm-mbhc-hphl-swh = <1>;
 	qcom,msm-mbhc-gnd-swh = <1>;
 	qcom,tdm-audio-intf;
-	qcom,afe-rxtx-lb;
 	reg = <0xc051000 0x4>,
 		<0xc051004 0x4>,
 		<0xc055000 0x4>,
@@ -100,8 +99,6 @@
 		"AIF4 VI", "MCLK",
 		"AIF4 VI", "MICBIAS_REGULATOR",
 		"RX_BIAS", "MCLK",
-		"BRIDGE RX OUT", "MCLK",
-		"BRIDGE TX IN", "MCLK",
 		"MADINPUT", "MCLK",
 		"AIF4 MAD", "MICBIAS_REGULATOR",
 		"AMIC1", "MIC BIAS3",
@@ -144,7 +141,7 @@
 		<&sb_5_rx>,  <&bt_sco_rx>,
 		<&bt_sco_tx>, <&int_fm_rx>, <&int_fm_tx>,
 		<&sb_6_rx>, <&dai_pri_tdm_rx_0>, <&dai_pri_tdm_tx_0>,
-		<&dai_sec_tdm_rx_0>, <&dai_sec_tdm_tx_0>, <&afe_loopback_tx>;
+		<&dai_sec_tdm_rx_0>, <&dai_sec_tdm_tx_0>;
 	asoc-cpu-names = "msm-dai-q6-auxpcm.1",
 			"msm-dai-q6-mi2s.2",
 			"msm-dai-q6-mi2s.3", "msm-dai-q6-mi2s.5",
@@ -162,29 +159,46 @@
 			"msm-dai-q6-dev.12292", "msm-dai-q6-dev.12293",
 			"msm-dai-q6-dev.16396", "msm-dai-q6-tdm.36864",
 			"msm-dai-q6-tdm.36865", "msm-dai-q6-tdm.36880",
-			"msm-dai-q6-tdm.36881", "msm-dai-q6-dev.24577";
+			"msm-dai-q6-tdm.36881";
 	qcom,msm-gpios =
 		"quin_i2s",
 		"us_eu_gpio",
-		"quat_i2s";
+		"sec_tdm",
+		"pri_tdm";
 	qcom,pinctrl-names =
 		"all_off",
-		"quin_i2s_act",
+		"quin_act",
 		"us_eu_gpio_act",
-		"quin_i2s_us_eu_gpio_act",
-		"quat_i2s_act",
-		"quat_i2s_quin_i2s_act",
-		"quat_i2s_us_eu_gpio_act",
-		"quat_i2s_us_eu_gpio_quin_i2s_act";
+		"quin_us_eu_gpio_act",
+		"sec_tdm_act",
+		"sec_tdm_quin_i2s_act",
+		"sec_tdm_us_eu_gpio_act",
+		"sec_tdm_us_eu_gpio_quin_i2s_act",
+		"pri_tdm_act",
+		"pri_tdm_quin_i2s_act",
+		"pri_tdm_us_eu_gpio_act",
+		"pri_tdm_quin_i2s_us_eu_gpio_act",
+		"pri_tdm_sec_tdm_act",
+		"pri_tdm_sec_tdm_quin_i2s_act",
+		"pri_tdm_sec_tdm_us_eu_gpio_act",
+		"pri_tdm_sec_tdm_us_eu_gpio_quin_i2s_act";
 	pinctrl-names =
 		"all_off",
-		"quin_i2s_act",
+		"quin_act",
 		"us_eu_gpio_act",
-		"quin_i2s_us_eu_gpio_act",
-		"quat_i2s_act",
-		"quat_i2s_quin_i2s_act",
-		"quat_i2s_us_eu_gpio_act",
-		"quat_i2s_us_eu_gpio_quin_i2s_act";
+		"quin_us_eu_gpio_act",
+		"sec_tdm_act",
+		"sec_tdm_quin_i2s_act",
+		"sec_tdm_us_eu_gpio_act",
+		"sec_tdm_us_eu_gpio_quin_i2s_act",
+		"pri_tdm_act",
+		"pri_tdm_quin_i2s_act",
+		"pri_tdm_us_eu_gpio_act",
+		"pri_tdm_quin_i2s_us_eu_gpio_act",
+		"pri_tdm_sec_tdm_act",
+		"pri_tdm_sec_tdm_quin_i2s_act",
+		"pri_tdm_sec_tdm_us_eu_gpio_act",
+		"pri_tdm_sec_tdm_us_eu_gpio_quin_i2s_act";
 
 	pinctrl-0 = <&pri_tlmm_ws_sus
 		&cross_conn_det_sus &pri_mi2s_sd0_sleep
@@ -193,7 +207,7 @@
 		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
 	pinctrl-1 = <&pri_tlmm_ws_act
 		&cross_conn_det_sus &pri_mi2s_sd0_active
-		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_sleep
 		&sec_mi2s_ws_sleep &sec_mi2s_sck_sleep
 		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
 	pinctrl-2 = <&pri_tlmm_ws_sus
@@ -203,25 +217,65 @@
 		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
 	pinctrl-3 = <&pri_tlmm_ws_act
 		&cross_conn_det_act &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_sleep
+		&sec_mi2s_ws_sleep &sec_mi2s_sck_sleep
+		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
+	pinctrl-4 = <&pri_tlmm_ws_act
+		&cross_conn_det_sus &pri_mi2s_sd0_active
 		&pri_mi2s_sck_active &pri_mi2s_sd1_active
 		&sec_mi2s_ws_sleep &sec_mi2s_sck_sleep
 		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
-	pinctrl-4 = <&pri_tlmm_ws_sus
+	pinctrl-5 = <&pri_tlmm_ws_act
+		&cross_conn_det_sus &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&sec_mi2s_ws_sleep &sec_mi2s_sck_sleep
+		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
+	pinctrl-6 = <&pri_tlmm_ws_act
+		&cross_conn_det_act &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&sec_mi2s_ws_sleep &sec_mi2s_sck_sleep
+		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
+	pinctrl-7 = <&pri_tlmm_ws_act
+		&cross_conn_det_act &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&sec_mi2s_ws_sleep &sec_mi2s_sck_sleep
+		&sec_mi2s_sd1_sleep &sec_mi2s_sd0_sleep>;
+	pinctrl-8 = <&pri_tlmm_ws_sus
 		&cross_conn_det_sus &pri_mi2s_sd0_sleep
 		&pri_mi2s_sck_sleep &pri_mi2s_sd1_sleep
 		&sec_mi2s_ws_active &sec_mi2s_sck_active
 		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
-	pinctrl-5 = <&pri_tlmm_ws_act
+	pinctrl-9 = <&pri_tlmm_ws_act
 		&cross_conn_det_sus &pri_mi2s_sd0_active
-		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_sleep
 		&sec_mi2s_ws_active &sec_mi2s_sck_active
 		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
-	pinctrl-6 = <&pri_tlmm_ws_sus
+	pinctrl-10 = <&pri_tlmm_ws_sus
 		&cross_conn_det_act &pri_mi2s_sd0_sleep
 		&pri_mi2s_sck_sleep &pri_mi2s_sd1_sleep
 		&sec_mi2s_ws_active &sec_mi2s_sck_active
 		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
-	pinctrl-7 = <&pri_tlmm_ws_act
+	pinctrl-11 = <&pri_tlmm_ws_act
+		&cross_conn_det_act &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_sleep
+		&sec_mi2s_ws_active &sec_mi2s_sck_active
+		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
+	pinctrl-12 = <&pri_tlmm_ws_act
+		&cross_conn_det_sus &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&sec_mi2s_ws_active &sec_mi2s_sck_active
+		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
+	pinctrl-13 = <&pri_tlmm_ws_act
+		&cross_conn_det_sus &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&sec_mi2s_ws_active &sec_mi2s_sck_active
+		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
+	pinctrl-14 = <&pri_tlmm_ws_act
+		&cross_conn_det_act &pri_mi2s_sd0_active
+		&pri_mi2s_sck_active &pri_mi2s_sd1_active
+		&sec_mi2s_ws_active &sec_mi2s_sck_active
+		&sec_mi2s_sd1_active &sec_mi2s_sd0_active>;
+	pinctrl-15 = <&pri_tlmm_ws_act
 		&cross_conn_det_act &pri_mi2s_sd0_active
 		&pri_mi2s_sck_active &pri_mi2s_sd1_active
 		&sec_mi2s_ws_active &sec_mi2s_sck_active
@@ -332,10 +386,6 @@
 			qcom,msm-cpudai-tdm-data-align = <0>;
 		};
 	};
-};
-
-&dai_pri_auxpcm {
-	qcom,msm-cpudai-afe-clk-ver = <2>;
 };
 
 &tlmm {

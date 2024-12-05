@@ -3626,10 +3626,7 @@ static int perf_release(struct inode *inode, struct file *file)
 	if ((event->state == PERF_EVENT_STATE_OFF) &&
 	    event->attr.constraint_duplicate)
 		event->state = PERF_EVENT_STATE_ACTIVE;
-
-	get_online_cpus();
 	put_event(file->private_data);
-	put_online_cpus();
 	return 0;
 }
 
@@ -8485,7 +8482,6 @@ static void perf_event_exit_cpu(int cpu)
 {
 	perf_event_exit_cpu_context(cpu);
 }
-
 #else
 static inline void perf_event_exit_cpu(int cpu) { }
 static inline void perf_event_start_swclock(int cpu) { }

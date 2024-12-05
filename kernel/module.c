@@ -1,3 +1,4 @@
+/* 2016-11-18: File changed by Sony Corporation */
 /*
    Copyright (C) 2002 Richard Henderson
    Copyright (C) 2001 Rusty Russell, 2002, 2010 Rusty Russell IBM.
@@ -105,6 +106,10 @@ static LIST_HEAD(modules);
 #ifdef CONFIG_KGDB_KDB
 struct list_head *kdb_modules = &modules; /* kdb needs the list of modules */
 #endif /* CONFIG_KGDB_KDB */
+#ifdef CONFIG_EXCEPTION_MONITOR
+struct list_head *em_modules = &modules;
+EXPORT_SYMBOL_GPL(em_modules);
+#endif /* CONFIG_EXCEPTION_MONITOR */
 
 #ifdef CONFIG_MODULE_SIG
 #ifdef CONFIG_MODULE_SIG_FORCE
@@ -1168,6 +1173,10 @@ static int check_version(Elf_Shdr *sechdrs,
 		goto bad_version;
 	}
 
+#ifdef CONFIG_SNSC_ALLOW_PARTIALLY_MISSING_MODULE_VERSIONS
+	if (!try_to_force_load(mod, symname))
+		return 1;
+#endif
 	pr_warn("%s: no symbol version for %s\n", mod->name, symname);
 	return 0;
 
@@ -1224,7 +1233,16 @@ static inline int check_modstruct_version(Elf_Shdr *sechdrs,
 static inline int same_magic(const char *amagic, const char *bmagic,
 			     bool has_crcs)
 {
-	return strcmp(amagic, bmagic) == 0;
+	int ret;
+	ret = strncmp(amagic, bmagic,
+                       CONFIG_SNSC_MODULE_VERMAGIC_LENGTH);
+#ifdef CONFIG_SNSC_MODULE_VERMAGIC_LENGTH_WARN
+	if((ret == 0) && (strcmp(amagic, bmagic) != 0)) {
+		printk("WARNING: The module is built by %s, but current kernel version is %s\n", amagic, bmagic);
+	}
+
+#endif
+	return ret == 0;
 }
 #endif /* CONFIG_MODVERSIONS */
 

@@ -1,3 +1,4 @@
+/* 2017-05-08: File changed by Sony Corporation */
 /*
  *  linux/drivers/char/mem.c
  *
@@ -27,6 +28,7 @@
 #include <linux/export.h>
 #include <linux/io.h>
 #include <linux/aio.h>
+#include <linux/snsc_boot_time.h>
 
 #include <asm/uaccess.h>
 

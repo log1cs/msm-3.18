@@ -1,0 +1,12 @@
+config LTTNG
+	tristate "LTTng support"
+	depends on TRACEPOINTS
+	help
+	  LTTng is an open source tracing framework for Linux.
+
+	  See https://lttng.org/
+
+	  To compile as a set of modules, choose M here. To compile into
+	  the Linux kernel image, choose Y.
+
+	  If unsure, say N.
