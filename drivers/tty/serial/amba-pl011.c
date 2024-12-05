@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  Driver for AMBA serial ports
  *
@@ -58,6 +59,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/sizes.h>
 #include <linux/io.h>
+#include <linux/nmi.h>
 
 #define UART_NR			14
 
@@ -1689,8 +1691,7 @@ static void pl011_shutdown(struct uart_port *port)
 			plat->exit();
 	}
 
-	if (uap->port.ops->flush_buffer)
-		uap->port.ops->flush_buffer(port);
+	pl011_dma_flush_buffer(port);
 }
 
 static void
@@ -1971,6 +1972,72 @@ pl011_console_write(struct console *co, const char *s, unsigned int count)
 	clk_disable(uap->clk);
 }
 
+#ifdef CONFIG_CONSOLE_READ
+static int pl011_console_read(struct console *co, char *buffer,
+			      unsigned count)
+{
+	struct uart_amba_port *uap = amba_ports[co->index];
+	unsigned int old_cr, new_cr, old_imsc;
+	int i;
+
+	clk_enable(uap->clk);
+
+	old_imsc = readw(uap->port.membase + UART011_IMSC);
+	writew(0, uap->port.membase + UART011_IMSC);
+	old_cr = readw(uap->port.membase + UART011_CR);
+	new_cr = old_cr | UART01x_CR_UARTEN | UART011_CR_RXE;
+	writew(new_cr, uap->port.membase + UART011_CR);
+
+	for (i = 0; i < count; i++) {
+		while (readw(uap->port.membase + UART01x_FR)
+		       & UART01x_FR_RXFE){
+			udelay(1);
+			touch_nmi_watchdog();
+		}
+		*buffer++ = readw(uap->port.membase + UART01x_DR);
+	}
+
+	writew(old_cr, uap->port.membase + UART011_CR);
+	writew(old_imsc, uap->port.membase + UART011_IMSC);
+
+	clk_disable(uap->clk);
+
+	return i;
+}
+#endif /* CONFIG_CONSOLE_READ */
+
+#ifdef CONFIG_SERIAL_AMBA_PL011_FLUSH_SERIAL_TTY
+int pl011_flush_serial_tty(struct console *co)
+{
+	struct uart_amba_port *uart;
+	struct tty_struct *tty;
+	int line;
+
+	if (co == NULL)
+		return -ENODEV;
+
+	line = co->index;
+	if (line >= ARRAY_SIZE(amba_ports))
+		return -ENODEV;
+
+	uart = amba_ports[line];
+	tty = uart->port.state->port.tty;
+
+	if (!in_interrupt()) {
+		tty_wait_until_sent(tty, 0);
+		return 0;
+	}
+
+	/* ...else if in interrupt */
+	while (tty->driver->ops->chars_in_buffer(tty)) {
+		if (!(readw(uart->port.membase + UART01x_FR) & UART01x_FR_TXFF))
+			pl011_tx_chars(uart);
+	}
+	return 0;
+
+}
+#endif /* CONFIG_SERIAL_AMBA_PL011_FLUSH_SERIAL_TTY */
+
 static void __init
 pl011_console_get_options(struct uart_amba_port *uap, int *baud,
 			     int *parity, int *bits)
@@ -2054,6 +2121,12 @@ static int __init pl011_console_setup(struct console *co, char *options)
 static struct uart_driver amba_reg;
 static struct console amba_console = {
 	.name		= "ttyAMA",
+#ifdef CONFIG_SERIAL_AMBA_PL011_FLUSH_SERIAL_TTY
+	.flush_tty	= pl011_flush_serial_tty,
+#endif /* CONFIG_SERIAL_AMBA_PL011_FLUSH_SERIAL_TTY */
+#ifdef CONFIG_CONSOLE_READ
+	.read           = pl011_console_read,
+#endif /* CONFIG_CONSOLE_READ */
 	.write		= pl011_console_write,
 	.device		= uart_console_device,
 	.setup		= pl011_console_setup,
