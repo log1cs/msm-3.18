@@ -1,3 +1,4 @@
+/* 2015-09-01: File changed by Sony Corporation */
 /* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -1761,6 +1762,10 @@ static int qpnp_wled_probe(struct spmi_device *spmi)
 		}
 	}
 
+#ifdef CONFIG_SOMC_TONE
+	qpnp_wled_set(&wled->cdev, wled->cdev.max_brightness);
+#endif /* CONFIG_SOMC_TONE */
+
 	return 0;
 
 sysfs_fail:
@@ -1785,6 +1790,9 @@ static int qpnp_wled_remove(struct spmi_device *spmi)
 	led_classdev_unregister(&wled->cdev);
 	cancel_work_sync(&wled->work);
 
+#ifdef CONFIG_AL0_RAMDUMP
+	qpnp_wled_set(&wled->cdev, LED_FULL);
+#endif
 	return 0;
 }
 
