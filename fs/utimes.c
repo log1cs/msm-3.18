@@ -1,3 +1,4 @@
+/* 2017-06-21: File changed by Sony Corporation */
 #include <linux/compiler.h>
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -97,14 +98,18 @@ static int utimes_common(struct path *path, struct timespec *times)
 			goto mnt_drop_write_and_out;
 
 		if (!inode_owner_or_capable(inode)) {
-			error = inode_permission2(path->mnt, inode, MAY_WRITE);
+			error = inode_permission(inode, MAY_WRITE);
 			if (error)
 				goto mnt_drop_write_and_out;
 		}
 	}
 retry_deleg:
 	mutex_lock(&inode->i_mutex);
-	error = notify_change2(path->mnt, path->dentry, &newattrs, &delegated_inode);
+	error = notify_change(path->dentry, &newattrs, &delegated_inode);
+#ifdef CONFIG_SNSC_FS_OSYNC_ATTR
+       if (!error && IS_SYNC(inode))
+               generic_osync_inode_only(inode);
+#endif
 	mutex_unlock(&inode->i_mutex);
 	if (delegated_inode) {
 		error = break_deleg_wait(&delegated_inode);

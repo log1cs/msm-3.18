@@ -1,3 +1,4 @@
+/* 2017-06-21: File changed by Sony Corporation */
 /*
  *  linux/fs/block_dev.c
  *
@@ -167,11 +168,19 @@ blkdev_direct_IO(int rw, struct kiocb *iocb, struct iov_iter *iter,
 
 int __sync_blockdev(struct block_device *bdev, int wait)
 {
+	int ret = 0;
+
 	if (!bdev)
 		return 0;
 	if (!wait)
-		return filemap_flush(bdev->bd_inode->i_mapping);
-	return filemap_write_and_wait(bdev->bd_inode->i_mapping);
+		ret = filemap_flush(bdev->bd_inode->i_mapping);
+	else {
+		ret = filemap_write_and_wait(bdev->bd_inode->i_mapping);
+#ifdef CONFIG_SNSC_FS_FLUSH_HARDWARE_CACHE
+		blkdev_issue_flush(bdev, GFP_KERNEL, NULL);
+#endif
+	}
+	return ret;
 }
 
 /*
