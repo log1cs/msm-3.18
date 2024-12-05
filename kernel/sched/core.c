@@ -1,3 +1,4 @@
+/* 2017-04-24: File changed by Sony Corporation */
 /*
  *  kernel/sched/core.c
  *
@@ -87,6 +88,9 @@
 #endif
 #ifdef CONFIG_MSM_APP_SETTINGS
 #include <asm/app_api.h>
+#endif
+#ifdef CONFIG_SNSC_LCTRACER
+#include <linux/snsc_lctracer.h>
 #endif
 
 #include "sched.h"
@@ -963,20 +967,18 @@ static void set_load_weight(struct task_struct *p)
 	load->inv_weight = prio_to_wmult[prio];
 }
 
-static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
+static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
-	if (!(flags & ENQUEUE_RESTORE))
-		sched_info_queued(rq, p);
+	sched_info_queued(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
 	trace_sched_enq_deq_task(p, 1, cpumask_bits(&p->cpus_allowed)[0]);
 }
 
-static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
+static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
-	if (!(flags & DEQUEUE_SAVE))
-		sched_info_dequeued(rq, p);
+	sched_info_dequeued(rq, p);
 	p->sched_class->dequeue_task(rq, p, flags);
 	trace_sched_enq_deq_task(p, 0, cpumask_bits(&p->cpus_allowed)[0]);
 }
@@ -1083,6 +1085,105 @@ void sched_set_stop_task(int cpu, struct task_struct *stop)
 		old_stop->sched_class = &rt_sched_class;
 	}
 }
+
+#ifdef CONFIG_EXCEPTION_MONITOR
+/* Stop all tasks running with the given mm, except for the calling task.  */
+int stop_all_threads_timeout(struct mm_struct *mm, long timeout_msec,
+			     int give_up_all_sibling)
+{
+	struct task_struct *g, *p;
+	int all_stopped = 0;
+	unsigned long end_time;
+	int ret = 0;
+
+	if (mm != NULL)
+		set_bit(MMF_STOPPING_SIBLINGS_BIT, &mm->flags);
+	read_lock(&tasklist_lock);
+	do_each_thread(g,p) {
+		if (p->mm == mm && p != current && p->state != TASK_STOPPED) {
+			send_sig (SIGSTOP, p, 1);
+		}
+	}while_each_thread(g,p);
+
+	/* Now wait for every task to cease running.  */
+	/* Beware: this loop might not terminate in the case of a malicious
+	   program sending SIGCONT to threads.  But it is still killable, and
+	   only moderately disruptive (because of the tasklist_lock).  */
+	/* Ignore uninterruptible tasks because they may not respond
+	   to the signal for unacceptably long period.	Instead, wait
+	   for them with a timeout in the latter loop */
+	for (;!give_up_all_sibling;) {
+		all_stopped = 1;
+		do_each_thread(g,p) {
+			if (p->mm == mm && p != current
+			    && p->state != TASK_STOPPED
+			    && p->state != TASK_UNINTERRUPTIBLE) {
+				all_stopped = 0;
+				break;
+			}
+		}while_each_thread(g,p);
+		if (all_stopped)
+			break;
+		read_unlock(&tasklist_lock);
+		set_current_state(TASK_UNINTERRUPTIBLE);
+		schedule_timeout(1);
+		read_lock(&tasklist_lock);
+	}
+
+	/* Wait (with timeout) for uninterruptible tasks to cease running.  */
+	end_time = jiffies + msecs_to_jiffies(timeout_msec);
+	for (;;) {
+		all_stopped = 1;
+		do_each_thread(g,p) {
+			if (p->mm == mm && p != current
+			    && p->state != TASK_STOPPED) {
+				all_stopped = 0;
+				break;
+			}
+		}while_each_thread(g,p);
+		if (all_stopped)
+			break;
+		if (timeout_msec >= 0 && time_before(end_time, jiffies)) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+		read_unlock(&tasklist_lock);
+		set_current_state(TASK_UNINTERRUPTIBLE);
+		schedule_timeout(1);
+		read_lock(&tasklist_lock);
+	}
+
+	read_unlock(&tasklist_lock);
+#ifdef CONFIG_SMP
+	/* wait task inactive could sleep for ever, so skip doing this... */
+	if (!give_up_all_sibling)
+		/* Make sure they've all gotten off their CPUs.  */
+		do_each_thread(g,p) {
+			if (p->mm == mm && p != current
+			    && p->state != TASK_UNINTERRUPTIBLE)
+				wait_task_inactive(p, 0);
+		}while_each_thread(g,p);
+#endif
+	if (mm != NULL)
+		clear_bit(MMF_STOPPING_SIBLINGS_BIT, &mm->flags);
+	return ret;
+}
+
+/* Restart all the tasks with the given mm.  Hope none of them were in state
+   TASK_STOPPED for some other reason...  */
+void start_all_threads(struct mm_struct *mm)
+{
+	struct task_struct *g, *p;
+
+	read_lock(&tasklist_lock);
+	do_each_thread(g,p) {
+		if (p->mm == mm && p != current) {
+			send_sig (SIGCONT, p, 1);
+		}
+	}while_each_thread(g,p);
+	read_unlock(&tasklist_lock);
+}
+#endif
 
 /*
  * __normal_prio - return the priority that is based on the static prio
@@ -4380,7 +4481,7 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 		if (p->sched_class->migrate_task_rq)
 			p->sched_class->migrate_task_rq(p, new_cpu);
 		p->se.nr_migrations++;
-		perf_sw_event(PERF_COUNT_SW_CPU_MIGRATIONS, 1, NULL, 0);
+		perf_sw_event_sched(PERF_COUNT_SW_CPU_MIGRATIONS, 1, 0);
 
 		fixup_busy_time(p, new_cpu);
 	}
@@ -4779,7 +4880,7 @@ ttwu_stat(struct task_struct *p, int cpu, int wake_flags)
 #endif /* CONFIG_SCHEDSTATS */
 }
 
-static inline void ttwu_activate(struct rq *rq, struct task_struct *p, int en_flags)
+static void ttwu_activate(struct rq *rq, struct task_struct *p, int en_flags)
 {
 	activate_task(rq, p, en_flags);
 	p->on_rq = TASK_ON_RQ_QUEUED;
@@ -5255,10 +5356,6 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	__dl_clear_params(p);
 
 	INIT_LIST_HEAD(&p->rt.run_list);
-	p->rt.timeout		= 0;
-	p->rt.time_slice	= sched_rr_timeslice;
-	p->rt.on_rq		= 0;
-	p->rt.on_list		= 0;
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	INIT_HLIST_HEAD(&p->preempt_notifiers);
@@ -5676,6 +5773,10 @@ static void finish_task_switch(struct rq *rq, struct task_struct *prev)
 	struct mm_struct *mm = rq->prev_mm;
 	long prev_state;
 
+#ifdef CONFIG_SNSC_LCTRACER
+	if (snsc_lctracer_is_running())
+		snsc_lctracer_add_trace_entry(prev, current, get_wchan(prev));
+#endif
 	rq->prev_mm = NULL;
 
 	/*
@@ -6174,7 +6275,7 @@ static noinline void __schedule_bug(struct task_struct *prev)
 static inline void schedule_debug(struct task_struct *prev)
 {
 #ifdef CONFIG_SCHED_STACK_END_CHECK
-	if (unlikely(task_stack_end_corrupted(prev)))
+	if (task_stack_end_corrupted(prev))
 		panic("corrupted stack end detected inside scheduler\n");
 #endif
 	/*
@@ -6536,7 +6637,7 @@ EXPORT_SYMBOL(default_wake_function);
  */
 void rt_mutex_setprio(struct task_struct *p, int prio)
 {
-	int oldprio, queued, running, queue_flag = DEQUEUE_SAVE | DEQUEUE_MOVE;
+	int oldprio, queued, running, enqueue_flag = 0;
 	struct rq *rq;
 	const struct sched_class *prev_class;
 
@@ -6564,15 +6665,11 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 
 	trace_sched_pi_setprio(p, prio);
 	oldprio = p->prio;
-
-	if (oldprio == prio)
-		queue_flag &= ~DEQUEUE_MOVE;
-
 	prev_class = p->sched_class;
 	queued = task_on_rq_queued(p);
 	running = task_current(rq, p);
 	if (queued)
-		dequeue_task(rq, p, queue_flag);
+		dequeue_task(rq, p, 0);
 	if (running)
 		put_prev_task(rq, p);
 
@@ -6591,7 +6688,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 		    (pi_task && dl_entity_preempt(&pi_task->dl, &p->dl))) {
 			p->dl.dl_boosted = 1;
 			p->dl.dl_throttled = 0;
-			queue_flag |= ENQUEUE_REPLENISH;
+			enqueue_flag = ENQUEUE_REPLENISH;
 		} else
 			p->dl.dl_boosted = 0;
 		p->sched_class = &dl_sched_class;
@@ -6599,7 +6696,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 		if (dl_prio(oldprio))
 			p->dl.dl_boosted = 0;
 		if (oldprio < prio)
-			queue_flag |= ENQUEUE_HEAD;
+			enqueue_flag = ENQUEUE_HEAD;
 		p->sched_class = &rt_sched_class;
 	} else {
 		if (dl_prio(oldprio))
@@ -6614,7 +6711,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	if (running)
 		p->sched_class->set_curr_task(rq);
 	if (queued)
-		enqueue_task(rq, p, queue_flag);
+		enqueue_task(rq, p, enqueue_flag);
 
 	check_class_changed(rq, p, prev_class, oldprio);
 out_unlock:
@@ -6647,7 +6744,7 @@ void set_user_nice(struct task_struct *p, long nice)
 	}
 	queued = task_on_rq_queued(p);
 	if (queued)
-		dequeue_task(rq, p, DEQUEUE_SAVE);
+		dequeue_task(rq, p, 0);
 
 	p->static_prio = NICE_TO_PRIO(nice);
 	set_load_weight(p);
@@ -6656,7 +6753,7 @@ void set_user_nice(struct task_struct *p, long nice)
 	delta = p->prio - old_prio;
 
 	if (queued) {
-		enqueue_task(rq, p, ENQUEUE_RESTORE);
+		enqueue_task(rq, p, 0);
 		/*
 		 * If the task increased its priority or is running and
 		 * lowered its priority, then reschedule its CPU:
@@ -6936,7 +7033,6 @@ static int __sched_setscheduler(struct task_struct *p,
 	const struct sched_class *prev_class;
 	struct rq *rq;
 	int reset_on_fork;
-	int queue_flags = DEQUEUE_SAVE | DEQUEUE_MOVE;
 
 	/* may grab non-irq protected spin_locks */
 	BUG_ON(in_interrupt());
@@ -7121,13 +7217,16 @@ change:
 	 * itself.
 	 */
 	new_effective_prio = rt_mutex_get_effective_prio(p, newprio);
-	if (new_effective_prio == oldprio)
-		queue_flags &= ~DEQUEUE_MOVE;
+	if (new_effective_prio == oldprio) {
+		__setscheduler_params(p, attr);
+		task_rq_unlock(rq, p, &flags);
+		return 0;
+	}
 
 	queued = task_on_rq_queued(p);
 	running = task_current(rq, p);
 	if (queued)
-		dequeue_task(rq, p, queue_flags);
+		dequeue_task(rq, p, 0);
 	if (running)
 		put_prev_task(rq, p);
 
@@ -7141,10 +7240,7 @@ change:
 		 * We enqueue to tail when the priority of a task is
 		 * increased (user space view).
 		 */
-		if (oldprio < p->prio)
-			queue_flags |= ENQUEUE_HEAD;
-
-		enqueue_task(rq, p, queue_flags);
+		enqueue_task(rq, p, oldprio <= p->prio ? ENQUEUE_HEAD : 0);
 	}
 
 	check_class_changed(rq, p, prev_class, oldprio);
@@ -8380,7 +8476,7 @@ void sched_setnuma(struct task_struct *p, int nid)
 	running = task_current(rq, p);
 
 	if (queued)
-		dequeue_task(rq, p, DEQUEUE_SAVE);
+		dequeue_task(rq, p, 0);
 	if (running)
 		put_prev_task(rq, p);
 
@@ -8389,7 +8485,7 @@ void sched_setnuma(struct task_struct *p, int nid)
 	if (running)
 		p->sched_class->set_curr_task(rq);
 	if (queued)
-		enqueue_task(rq, p, ENQUEUE_RESTORE);
+		enqueue_task(rq, p, 0);
 	task_rq_unlock(rq, p, &flags);
 }
 #endif
@@ -9372,6 +9468,9 @@ enum s_alloc {
  * Build an iteration mask that can exclude certain CPUs from the upwards
  * domain traversal.
  *
+ * Only CPUs that can arrive at this group should be considered to continue
+ * balancing.
+ *
  * Asymmetric node setups can result in situations where the domain tree is of
  * unequal depth, make sure to skip domains that already cover the entire
  * range.
@@ -9383,18 +9482,31 @@ enum s_alloc {
  */
 static void build_group_mask(struct sched_domain *sd, struct sched_group *sg)
 {
-	const struct cpumask *span = sched_domain_span(sd);
+	const struct cpumask *sg_span = sched_group_cpus(sg);
 	struct sd_data *sdd = sd->private;
 	struct sched_domain *sibling;
 	int i;
 
-	for_each_cpu(i, span) {
+	for_each_cpu(i, sg_span) {
 		sibling = *per_cpu_ptr(sdd->sd, i);
-		if (!cpumask_test_cpu(i, sched_domain_span(sibling)))
+
+		/*
+		 * Can happen in the asymmetric case, where these siblings are
+		 * unused. The mask will not be empty because those CPUs that
+		 * do have the top domain _should_ span the domain.
+		 */
+		if (!sibling->child)
+			continue;
+
+		/* If we would not end up here, we can't continue from here */
+		if (!cpumask_equal(sg_span, sched_domain_span(sibling->child)))
 			continue;
 
 		cpumask_set_cpu(i, sched_group_mask(sg));
 	}
+
+	/* We must not have empty masks here */
+	WARN_ON_ONCE(cpumask_empty(sched_group_mask(sg)));
 }
 
 /*
@@ -11054,7 +11166,7 @@ void sched_move_task(struct task_struct *tsk)
 	queued = task_on_rq_queued(tsk);
 
 	if (queued)
-		dequeue_task(rq, tsk, DEQUEUE_SAVE | DEQUEUE_MOVE);
+		dequeue_task(rq, tsk, 0);
 	if (unlikely(running))
 		put_prev_task(rq, tsk);
 
@@ -11078,7 +11190,7 @@ void sched_move_task(struct task_struct *tsk)
 	if (unlikely(running))
 		tsk->sched_class->set_curr_task(rq);
 	if (queued)
-		enqueue_task(rq, tsk, ENQUEUE_RESTORE | ENQUEUE_MOVE);
+		enqueue_task(rq, tsk, 0);
 
 	task_rq_unlock(rq, tsk, &flags);
 }
