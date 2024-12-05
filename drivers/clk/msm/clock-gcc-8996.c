@@ -1,3 +1,4 @@
+/* 2017-06-20: File changed by Sony Corporation */
 /* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -1020,6 +1021,7 @@ static struct clk_freq_tbl ftbl_blsp2_qup6_spi_apps_clk_src[] = {
 	F(   4800000,         cxo_clk_src,    4,    0,     0),
 	F(   9600000,         cxo_clk_src,    2,    0,     0),
 	F(  15000000, gpll0_out_main,   10,    1,     4),
+	F(  18750000, gpll0_out_main,   16,    1,     2),
 	F(  25000000, gpll0_out_main,   12,    1,     2),
 	F(  50000000, gpll0_out_main,   12,    0,     0),
 	F_END
