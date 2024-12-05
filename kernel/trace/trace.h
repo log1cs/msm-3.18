@@ -1,3 +1,4 @@
+/* 2017-06-02: File changed by Sony Corporation */
 
 #ifndef _LINUX_KERNEL_TRACE_H
 #define _LINUX_KERNEL_TRACE_H
@@ -594,6 +595,11 @@ int trace_empty(struct trace_iterator *iter);
 void trace_graph_return(struct ftrace_graph_ret *trace);
 int trace_graph_entry(struct ftrace_graph_ent *trace);
 void set_graph_array(struct trace_array *tr);
+
+#ifdef CONFIG_FUNCTION_DURATION_TRACER
+int duration_entry(struct ftrace_graph_ent *trace);
+void duration_return(struct ftrace_graph_ret *trace);
+#endif
 
 void tracing_start_cmdline_record(void);
 void tracing_stop_cmdline_record(void);
