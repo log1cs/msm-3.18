@@ -38,7 +38,6 @@
 
 static struct class *driver_class;
 static dev_t profiler_device_no;
-static int stop_done = 1;
 
 struct profiler_control {
 
@@ -213,10 +212,6 @@ static int bw_profiling_stop(struct tz_bw_svc_buf *bwbuf)
 {
 	struct tz_bw_svc_stop_req *bwstopreq = NULL;
 
-	if (stop_done) {
-		stop_done = 0;
-		return 0;
-	}
 	bwstopreq = (struct tz_bw_svc_stop_req *) &bwbuf->bwreq;
 	/* Populate request data */
 	bwstopreq->cmd_id = TZ_BW_SVC_STOP_ID;
@@ -246,7 +241,6 @@ static int profiler_get_bw_info(void __user *argp)
 		ret = bw_profiling_start(bwbuf);
 		if (ret)
 			pr_err("bw_profiling_start Failed with ret: %d\n", ret);
-		stop_done = 0;
 		break;
 	}
 	case TZ_BW_SVC_GET_ID: {
@@ -259,7 +253,6 @@ static int profiler_get_bw_info(void __user *argp)
 		ret = bw_profiling_stop(bwbuf);
 		if (ret)
 			pr_err("bw_profiling_stop Failed with ret: %d\n", ret);
-		stop_done = 1;
 		break;
 	}
 	default:
