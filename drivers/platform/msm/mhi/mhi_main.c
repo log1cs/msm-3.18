@@ -438,7 +438,7 @@ bool mhi_is_device_ready(const struct device *dev,
 			 const char *node_name)
 {
 	struct mhi_device_ctxt *itr;
-	const struct device_node const *of_node;
+	const struct device_node *of_node;
 	bool match_found = false;
 
 	if (!mhi_device_drv)
