@@ -663,8 +663,9 @@ static int mobicore_init(void)
 	* the driver
 	*/
 	err = device_admin_init(mobicore_start);
-	if (err)
+	if (err) {
 		goto fail_creat_dev_admin;
+	}
 
 		return 0;
 
